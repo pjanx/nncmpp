@@ -1,7 +1,7 @@
 /*
  * nncmpp -- the MPD client you never knew you needed
  *
- * Copyright (c) 2016 - 2022, Přemysl Eric Janouch <p@janouch.name>
+ * Copyright (c) 2016 - 2023, Přemysl Eric Janouch <p@janouch.name>
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted.
@@ -1838,10 +1838,24 @@ app_layout_song_info (void)
 
 	chtype attrs[2] = { APP_ATTR (NORMAL), APP_ATTR (HIGHLIGHT) };
 
-	char *title;
+	// Split the path for files lying within MPD's "music_directory".
+	const char *file = compact_map_find (map, "file");
+	const char *subroot_basename = NULL;
+	if (file && *file != '/' && !strstr (file, "://"))
+	{
+		const char *last_slash = strrchr (file, '/');
+		if (last_slash)
+			subroot_basename = last_slash + 1;
+		else
+			subroot_basename = file;
+	}
+
+	const char *title = NULL;
+	const char *name = compact_map_find (map, "name");
 	if ((title = compact_map_find (map, "title"))
-	 || (title = compact_map_find (map, "name"))
-	 || (title = compact_map_find (map, "file")))
+	 || (title = name)
+	 || (title = subroot_basename)
+	 || (title = file))
 	{
 		struct layout l = {};
 		app_push (&l, g.ui->padding (attrs[0], 0.25, 1));
@@ -1851,23 +1865,38 @@ app_layout_song_info (void)
 		app_flush_layout (&l);
 	}
 
-	char *artist = compact_map_find (map, "artist");
-	char *album  = compact_map_find (map, "album");
-	if (!artist && !album)
-		return;
-
+	// Showing a blank line is better than having the controls jump around
+	// while switching between files that we do and don't have enough data for.
 	struct layout l = {};
 	app_push (&l, g.ui->padding (attrs[0], 0.25, 1));
 
-	if (artist)
+	char *artist = compact_map_find (map, "artist");
+	char *album  = compact_map_find (map, "album");
+	if (artist || album)
 	{
-		app_push (&l, g.ui->label (attrs[0], "by "));
-		app_push (&l, g.ui->label (attrs[1], artist));
+		if (artist)
+		{
+			app_push (&l, g.ui->label (attrs[0], "by "));
+			app_push (&l, g.ui->label (attrs[1], artist));
+		}
+		if (album)
+		{
+			app_push (&l, g.ui->label (attrs[0], &" from "[!artist]));
+			app_push (&l, g.ui->label (attrs[1], album));
+		}
 	}
-	if (album)
+	else if (subroot_basename && subroot_basename != file)
 	{
-		app_push (&l, g.ui->label (attrs[0], &" from "[!artist]));
-		app_push (&l, g.ui->label (attrs[1], album));
+		char *parent = xstrndup (file, subroot_basename - file - 1);
+		app_push (&l, g.ui->label (attrs[0], "in "));
+		app_push (&l, g.ui->label (attrs[1], parent));
+		free (parent);
+	}
+	else if (file && *file != '/' && strstr (file, "://")
+		&& name && name != title)
+	{
+		// This is likely to contain the name of an Internet radio.
+		app_push (&l, g.ui->label (attrs[1], name));
 	}
 
 	app_push_fill (&l, g.ui->padding (attrs[0], 0, 1));
