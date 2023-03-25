@@ -6748,7 +6748,10 @@ on_x11_event (XEvent *ev)
 	case SelectionClear:
 		cstr_set (&g.x11_selection, NULL);
 		break;
-	case UnmapNotify:
+	// UnmapNotify can be received when restarting the window manager.
+	// Should this turn out to be unreliable (window not destroyed by WM
+	// upon closing), opt for the WM_DELETE_WINDOW protocol as well.
+	case DestroyNotify:
 		app_quit ();
 		break;
 	case FocusIn:
