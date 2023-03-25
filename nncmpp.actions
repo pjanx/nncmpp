@@ -2,6 +2,7 @@ NONE,               Do nothing
 
 QUIT,               Quit
 REDRAW,             Redraw screen
+ABORT,              Abort
 TAB_HELP,           Switch to help tab
 TAB_LAST,           Switch to last tab
 TAB_PREVIOUS,       Switch to previous tab

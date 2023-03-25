@@ -2662,6 +2662,14 @@ app_process_action (enum action action)
 	case ACTION_NONE:
 		return true;
 	case ACTION_QUIT:
+		app_quit ();
+		return true;
+	case ACTION_REDRAW:
+		clear ();
+		app_invalidate ();
+		return true;
+
+	case ACTION_ABORT:
 		// It is a pseudomode, avoid surprising the user
 		if (tab->item_mark > -1)
 		{
@@ -2669,13 +2677,7 @@ app_process_action (enum action action)
 			app_invalidate ();
 			return true;
 		}
-
-		app_quit ();
-		return true;
-	case ACTION_REDRAW:
-		clear ();
-		app_invalidate ();
-		return true;
+		return false;
 	case ACTION_MPD_COMMAND:
 		line_editor_start (&g.editor, ':');
 		g.editor.on_end = app_on_mpd_command_editor_end;
@@ -2807,7 +2809,7 @@ app_editor_process_action (enum action action)
 	app_invalidate ();
 	switch (action)
 	{
-	case ACTION_QUIT:
+	case ACTION_ABORT:
 		line_editor_abort (&g.editor, false);
 		g.editor.on_end = NULL;
 		return true;
@@ -3007,9 +3009,9 @@ static struct binding_default
 }
 g_normal_defaults[] =
 {
-	{ "Escape",     ACTION_QUIT               },
 	{ "q",          ACTION_QUIT               },
 	{ "C-l",        ACTION_REDRAW             },
+	{ "Escape",     ACTION_ABORT              },
 	{ "M-Tab",      ACTION_TAB_LAST           },
 	{ "F1",         ACTION_TAB_HELP           },
 	{ "S-Tab",      ACTION_TAB_PREVIOUS       },
@@ -3075,6 +3077,10 @@ g_normal_defaults[] =
 },
 g_editor_defaults[] =
 {
+	{ "C-g",        ACTION_ABORT              },
+	{ "Escape",     ACTION_ABORT              },
+	{ "Enter",      ACTION_EDITOR_CONFIRM     },
+
 	{ "Left",       ACTION_EDITOR_B_CHAR      },
 	{ "Right",      ACTION_EDITOR_F_CHAR      },
 	{ "C-b",        ACTION_EDITOR_B_CHAR      },
@@ -3098,10 +3104,6 @@ g_editor_defaults[] =
 	{ "C-u",        ACTION_EDITOR_B_KILL_LINE },
 	{ "C-k",        ACTION_EDITOR_F_KILL_LINE },
 	{ "C-w",        ACTION_EDITOR_B_KILL_WORD },
-
-	{ "C-g",        ACTION_QUIT               },
-	{ "Escape",     ACTION_QUIT               },
-	{ "Enter",      ACTION_EDITOR_CONFIRM     },
 };
 
 static int

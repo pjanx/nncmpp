@@ -5,6 +5,8 @@ Unreleased
 
  * Improved song information shown in the window header
 
+ * Escape no longer quits the program
+
  * X11: added italic font support
 
  * X11: fixed rendering of overflowing, partially visible list items
