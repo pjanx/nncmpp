@@ -117,8 +117,8 @@ as in the snippet above.  To replace the default volume control bindings, use:
 
 ....
 normal = {
-  "M-PageUp" = "pulse-volume-up"
-  "M-PageDown" = "pulse-volume-down"
+  "+" = "pulse-volume-up"
+  "-" = "pulse-volume-down"
 }
 ....
 

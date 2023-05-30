@@ -3073,8 +3073,8 @@ g_normal_defaults[] =
 	{ "Space",      ACTION_MPD_TOGGLE         },
 	{ "C-Space",    ACTION_MPD_STOP           },
 	{ "u",          ACTION_MPD_UPDATE_DB      },
-	{ "M-PageUp",   ACTION_MPD_VOLUME_UP      },
-	{ "M-PageDown", ACTION_MPD_VOLUME_DOWN    },
+	{ "+",          ACTION_MPD_VOLUME_UP      },
+	{ "-",          ACTION_MPD_VOLUME_DOWN    },
 },
 g_editor_defaults[] =
 {
