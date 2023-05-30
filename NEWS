@@ -11,6 +11,8 @@ Unreleased
 
  * X11: fixed rendering of overflowing, partially visible list items
 
+ * Added a "o" binding to select the currently playing song
+
  * Added Readline-like M-u, M-l, M-c editor bindings
 
 

@@ -3021,6 +3021,7 @@ g_normal_defaults[] =
 	{ "C-PageUp",   ACTION_TAB_PREVIOUS       },
 	{ "C-PageDown", ACTION_TAB_NEXT           },
 
+	{ "o",          ACTION_GOTO_PLAYING       },
 	{ "Home",       ACTION_GOTO_TOP           },
 	{ "End",        ACTION_GOTO_BOTTOM        },
 	{ "M-<",        ACTION_GOTO_TOP           },
@@ -3343,6 +3344,13 @@ current_tab_on_action (enum action action)
 	switch (action)
 	{
 		const char *id;
+	case ACTION_GOTO_PLAYING:
+		if (g.song < 0 || (size_t) g.song >= tab->item_count)
+			return false;
+
+		tab->item_selected = g.song;
+		app_ensure_selection_visible ();
+		return true;
 	case ACTION_MOVE_UP:
 		return current_tab_move_selection (-1);
 	case ACTION_MOVE_DOWN:

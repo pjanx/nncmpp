@@ -46,6 +46,8 @@ CENTER_CURSOR,      Center the cursor
 MOVE_UP,            Move selection up
 MOVE_DOWN,          Move selection down
 
+GOTO_PLAYING,       Go to playing song
+
 GOTO_TOP,           Go to top
 GOTO_BOTTOM,        Go to bottom
 GOTO_ITEM_PREVIOUS, Go to previous item
