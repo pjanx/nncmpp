@@ -2061,14 +2061,19 @@ app_layout_header (void)
 		app_layout_text (header, APP_ATTR (HEADER));
 }
 
+static struct widget *
+app_widget_by_id (int id)
+{
+	LIST_FOR_EACH (struct widget, w, g.widgets.head)
+		if (w->id == id)
+			return w;
+	return NULL;
+}
+
 static int
 app_visible_items_height (void)
 {
-	struct widget *list = NULL;
-	LIST_FOR_EACH (struct widget, w, g.widgets.head)
-		if (w->id == WIDGET_LIST)
-			list = w;
-
+	struct widget *list = app_widget_by_id (WIDGET_LIST);
 	hard_assert (list != NULL);
 
 	// The raw number of items that would have fit on the terminal
@@ -2948,11 +2953,7 @@ app_process_mouse (termo_mouse_event_t type, int x, int y, int button,
 		 && g.ui_dragging != WIDGET_SCROLLBAR)
 			return true;
 
-		struct widget *target = NULL;
-		LIST_FOR_EACH (struct widget, w, g.widgets.head)
-			if (w->id == g.ui_dragging)
-				target = w;
-
+		struct widget *target = app_widget_by_id (g.ui_dragging);
 		x -= target->x;
 		y -= target->y;
 		return app_process_left_mouse_click (target, x, y, modifiers);
@@ -4824,10 +4825,7 @@ spectrum_redraw (void)
 {
 	// A full refresh would be too computationally expensive,
 	// let's hack around it in this case
-	struct widget *spectrum = NULL;
-	LIST_FOR_EACH (struct widget, w, g.widgets.head)
-		if (w->id == WIDGET_SPECTRUM)
-			spectrum = w;
+	struct widget *spectrum = app_widget_by_id (WIDGET_SPECTRUM);
 	if (spectrum)
 		spectrum->on_render (spectrum);
 
