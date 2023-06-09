@@ -7,7 +7,7 @@ Unreleased
 
  * Escape no longer quits the program
 
- * X11: added italic font support
+ * X11: added support for font fallbacks and italic fonts
 
  * X11: fixed rendering of overflowing, partially visible list items
 

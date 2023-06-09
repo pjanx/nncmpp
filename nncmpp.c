@@ -1313,6 +1313,24 @@ enum player_state { PLAYER_STOPPED, PLAYER_PLAYING, PLAYER_PAUSED };
 // around a pointer to this, hence it is a simple global variable as well.
 // There is enough global state as it is.
 
+#ifdef WITH_X11
+
+/// Wraps Xft fonts into a linked list with fallbacks.
+struct x11_font_link
+{
+	struct x11_font_link *next;
+	XftFont *font;
+};
+
+struct x11_font
+{
+	struct x11_font_link *list;         ///< Fonts of varying Unicode coverage
+	FcPattern *pattern;                 ///< Original unsubstituted pattern
+	FcCharSet *unavailable;             ///< Couldn't find a font for these
+};
+
+#endif  // WITH_X11
+
 static struct app_context
 {
 	// Event loop:
@@ -1395,9 +1413,9 @@ static struct app_context
 	Region x11_clip;                    ///< Invalidated region
 	Picture x11_pixmap_picture;         ///< XRender wrap for x11_pixmap
 	XftDraw *xft_draw;                  ///< Xft rendering context
-	XftFont *xft_regular;               ///< Regular font
-	XftFont *xft_bold;                  ///< Bold font
-	XftFont *xft_italic;                ///< Italic font
+	struct x11_font xft_regular;        ///< Regular font
+	struct x11_font xft_bold;           ///< Bold font
+	struct x11_font xft_italic;         ///< Italic font
 	char *x11_selection;                ///< CLIPBOARD selection
 
 	XRenderColor x_fg[ATTRIBUTE_COUNT]; ///< Foreground per attribute
@@ -5900,14 +5918,190 @@ static XRenderColor x11_default_fg = { .alpha = 0xffff };
 static XRenderColor x11_default_bg = { 0xffff, 0xffff, 0xffff, 0xffff };
 static XErrorHandler x11_default_error_handler;
 
+static struct x11_font_link *
+x11_font_link_new (XftFont *font)
+{
+	struct x11_font_link *self = xcalloc (1, sizeof *self);
+	self->font = font;
+	return self;
+}
+
+static void
+x11_font_link_destroy (struct x11_font_link *self)
+{
+	XftFontClose (g.dpy, self->font);
+	free (self);
+}
+
+static struct x11_font_link *
+x11_font_link_open (FcPattern *pattern)
+{
+	XftFont *font = XftFontOpenPattern (g.dpy, pattern);
+	if (!font)
+	{
+		FcPatternDestroy (pattern);
+		return NULL;
+	}
+	return x11_font_link_new (font);
+}
+
+static bool
+x11_font_open (struct x11_font *self, FcPattern *pattern)
+{
+	FcPattern *substituted = FcPatternDuplicate (pattern);
+	FcConfigSubstitute (NULL, substituted, FcMatchPattern);
+
+	FcResult result = 0;
+	FcPattern *match
+		= XftFontMatch (g.dpy, DefaultScreen (g.dpy), substituted, &result);
+	FcPatternDestroy (substituted);
+	if (!match || !(self->list = x11_font_link_open (match)))
+	{
+		FcPatternDestroy (pattern);
+		return false;
+	}
+
+	self->pattern = pattern;
+	self->unavailable = FcCharSetCreate ();
+	return true;
+}
+
+static void
+x11_font_free (struct x11_font *self)
+{
+	FcPatternDestroy (self->pattern);
+	FcCharSetDestroy (self->unavailable);
+	LIST_FOR_EACH (struct x11_font_link, iter, self->list)
+		x11_font_link_destroy (iter);
+}
+
+/// Find or instantiate a font that can render the character given by cp.
 static XftFont *
-x11_font (struct widget *self)
+x11_font_cover_codepoint (struct x11_font *self, ucs4_t cp)
+{
+	if (FcCharSetHasChar (self->unavailable, cp))
+		return self->list->font;
+
+	struct x11_font_link **used = &self->list;
+	for (; *used; used = &(*used)->next)
+		if (XftCharExists (g.dpy, (*used)->font, cp))
+			return (*used)->font;
+
+	FcCharSet *set = FcCharSetCreate ();
+	FcCharSetAddChar (set, cp);
+	FcPattern *needle = FcPatternDuplicate (self->pattern);
+	FcPatternAddCharSet (needle, FC_CHARSET, set);
+	FcConfigSubstitute (NULL, needle, FcMatchPattern);
+
+	FcResult result = 0;
+	FcPattern *match
+		= XftFontMatch (g.dpy, DefaultScreen (g.dpy), needle, &result);
+	FcCharSetDestroy (set);
+	FcPatternDestroy (needle);
+	if (!match)
+		goto fail;
+
+	struct x11_font_link *new = x11_font_link_open (match);
+	if (!new)
+		goto fail;
+
+	// The reverse may happen simply due to race conditions.
+	if (XftCharExists (g.dpy, new->font, cp))
+		return (*used = new)->font;
+
+	x11_font_link_destroy (new);
+fail:
+	FcCharSetAddChar (self->unavailable, cp);
+	return self->list->font;
+}
+
+// TODO: Perhaps produce an array of FT_UInt glyph indexes, mainly so that
+//   x11_font_{hadvance,draw,render}() can use the same data, through the use
+//   of a new function that collects the spans in a data structure.
+static size_t
+x11_font_span (struct x11_font *self, const uint8_t *text, XftFont **font)
+{
+	hard_assert (self->list != NULL);
+
+	// Xft similarly just stops on invalid UTF-8.
+	ucs4_t cp = 0;
+	const uint8_t *p = text;
+	if (!(p = u8_next (&cp, p)))
+		return 0;
+
+	*font = x11_font_cover_codepoint (self, cp);
+	for (const uint8_t *end = NULL; (end = u8_next (&cp, p)); p = end)
+	{
+		if (x11_font_cover_codepoint (self, cp) != *font)
+			break;
+	}
+	return p - text;
+}
+
+static int
+x11_font_draw (struct x11_font *self, XftColor *color, int x, int y,
+	const char *text)
+{
+	int advance = 0;
+	size_t len = 0;
+	XftFont *font = NULL;
+	while ((len = x11_font_span (self, (const uint8_t *) text, &font)))
+	{
+		if (color)
+		{
+			XftDrawStringUtf8 (g.xft_draw, color, font,
+				x + advance, y + self->list->font->ascent,
+				(const FcChar8 *) text, len);
+		}
+
+		XGlyphInfo extents = {};
+		XftTextExtentsUtf8 (g.dpy, font, (const FcChar8 *) text, len, &extents);
+		text += len;
+		advance += extents.xOff;
+	}
+	return advance;
+}
+
+static int
+x11_font_hadvance (struct x11_font *self, const char *text)
+{
+	return x11_font_draw (self, NULL, 0, 0, text);
+}
+
+static int
+x11_font_render (struct x11_font *self, int op, Picture src, int srcx, int srcy,
+	int x, int y, const char *text)
+{
+	int advance = 0;
+	size_t len = 0;
+	XftFont *font = NULL;
+	while ((len = x11_font_span (self, (const uint8_t *) text, &font)))
+	{
+		if (src)
+		{
+			XftTextRenderUtf8 (g.dpy, op, src, font, g.x11_pixmap_picture,
+				srcx, srcy, x + advance, y + self->list->font->ascent,
+				(const FcChar8 *) text, len);
+		}
+
+		XGlyphInfo extents = {};
+		XftTextExtentsUtf8 (g.dpy, font, (const FcChar8 *) text, len, &extents);
+		text += len;
+		advance += extents.xOff;
+	}
+	return advance;
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+static struct x11_font *
+x11_widget_font (struct widget *self)
 {
 	if (self->attrs & A_BOLD)
-		return g.xft_bold;
+		return &g.xft_bold;
 	if (self->attrs & A_ITALIC)
-		return g.xft_italic;
-	return g.xft_regular;
+		return &g.xft_italic;
+	return &g.xft_regular;
 }
 
 static XRenderColor *
@@ -5977,16 +6171,12 @@ x11_render_label (struct widget *self)
 		return;
 
 	// TODO: Try to avoid re-measuring on each render.
-	XftFont *font = x11_font (self);
-	XGlyphInfo extents = {};
-	XftTextExtentsUtf8 (g.dpy, font,
-		(const FcChar8 *) self->text, strlen (self->text), &extents);
-	if (extents.xOff <= space)
+	struct x11_font *font = x11_widget_font (self);
+	int advance = x11_font_hadvance (font, self->text);
+	if (advance <= space)
 	{
 		XftColor color = { .color = *x11_fg (self) };
-		XftDrawStringUtf8 (g.xft_draw, &color, font,
-			self->x, self->y + font->ascent,
-			(const FcChar8 *) self->text, strlen (self->text));
+		x11_font_draw (font, &color, self->x, self->y, self->text);
 		return;
 	}
 
@@ -5994,16 +6184,15 @@ x11_render_label (struct widget *self)
 	XRenderColor solid = *x11_fg (self), colors[3] = { solid, solid, solid };
 	colors[2].alpha = 0;
 
-	double portion = MIN (1, 2.0 * font->height / space);
+	double portion = MIN (1, 2.0 * font->list->font->height / space);
 	XFixed stops[3] = { 0, XDoubleToFixed (1 - portion), XDoubleToFixed (1) };
 	XLinearGradient gradient = { {}, { XDoubleToFixed (space), 0 } };
 
 	// Note that this masking is a very expensive operation.
 	Picture source =
 		XRenderCreateLinearGradient (g.dpy, &gradient, stops, colors, 3);
-	XftTextRenderUtf8 (g.dpy, PictOpOver, source, font, g.x11_pixmap_picture,
-		-self->x, 0, self->x, self->y + font->ascent,
-		(const FcChar8 *) self->text, strlen (self->text));
+	x11_font_render (font, PictOpOver, source, -self->x, 0, self->x, self->y,
+		self->text);
 	XRenderFreePicture (g.dpy, source);
 }
 
@@ -6011,6 +6200,7 @@ static struct widget *
 x11_make_label (chtype attrs, const char *label)
 {
 	// Xft renders combining marks by themselves, NFC improves it a bit.
+	// We'd have to use HarfBuzz to do this correctly.
 	size_t label_len = strlen (label) + 1, normalized_len = 0;
 	uint8_t *normalized = u8_normalize (UNINORM_NFC,
 		(const uint8_t *) label, label_len, NULL, &normalized_len);
@@ -6024,13 +6214,11 @@ x11_make_label (chtype attrs, const char *label)
 	w->on_render = x11_render_label;
 	w->attrs = attrs;
 	memcpy (w + 1, normalized, normalized_len);
-
-	XftFont *font = x11_font (w);
-	XGlyphInfo extents = {};
-	XftTextExtentsUtf8 (g.dpy, font, normalized, normalized_len - 1, &extents);
-	w->width = extents.xOff;
-	w->height = font->height;
 	free (normalized);
+
+	struct x11_font *font = x11_widget_font (w);
+	w->width = x11_font_hadvance (font, w->text);
+	w->height = font->list->font->height;
 	return w;
 }
 
@@ -6313,7 +6501,7 @@ x11_render_editor (struct widget *self)
 {
 	x11_render_padding (self);
 
-	XftFont *font = x11_font (self);
+	XftFont *font = x11_widget_font (self)->list->font;
 	XftColor color = { .color = *x11_fg (self) };
 
 	// A simplistic adaptation of line_editor_write() follows.
@@ -6327,6 +6515,7 @@ x11_render_editor (struct widget *self)
 		x += extents.xOff + g.ui_vunit / 4;
 	}
 
+	// TODO: Adapt x11_font_{hadvance,draw}().
 	// TODO: Make this scroll around the caret, and fade like labels.
 	XftDrawString32 (g.xft_draw, &color, font, x, y,
 		g.editor.line, g.editor.len);
@@ -6386,9 +6575,9 @@ x11_destroy (void)
 	XRenderFreePicture (g.dpy, g.x11_pixmap_picture);
 	XFreePixmap (g.dpy, g.x11_pixmap);
 	XftDrawDestroy (g.xft_draw);
-	XftFontClose (g.dpy, g.xft_regular);
-	XftFontClose (g.dpy, g.xft_bold);
-	XftFontClose (g.dpy, g.xft_italic);
+	x11_font_free (&g.xft_regular);
+	x11_font_free (&g.xft_bold);
+	x11_font_free (&g.xft_italic);
 	cstr_set (&g.x11_selection, NULL);
 
 	poller_fd_reset (&g.x11_event);
@@ -6888,8 +7077,9 @@ x11_init_fonts (void)
 	//   as well as Net/DoubleClick*.  See the XSETTINGS proposal for details.
 	//   https://www.freedesktop.org/wiki/Specifications/XSettingsRegistry/
 	const char *name = get_config_string (g.config.root, "settings.x11_font");
-	int screen = DefaultScreen (g.dpy);
-	FcResult result = 0;
+
+	if (!FcInit ())
+		print_warning ("FontConfig initialization failed");
 
 	FcPattern *query_regular = FcNameParse ((const FcChar8 *) name);
 	FcPattern *query_bold = FcPatternDuplicate (query_regular);
@@ -6899,29 +7089,12 @@ x11_init_fonts (void)
 	FcPatternAdd (query_italic, FC_STYLE, (FcValue) {
 		.type = FcTypeString, .u.s = (FcChar8 *) "Italic" }, FcFalse);
 
-	FcPattern *regular = XftFontMatch (g.dpy, screen, query_regular, &result);
-	FcPatternDestroy (query_regular);
-	if (!regular)
-		exit_fatal ("cannot open font: %s (%d)", name, result);
-	if (!(g.xft_regular = XftFontOpenPattern (g.dpy, regular)))
-	{
-		FcPatternDestroy (regular);
+	if (!x11_font_open (&g.xft_regular, query_regular))
 		exit_fatal ("cannot open font: %s", name);
-	}
-
-	FcPattern *bold = XftFontMatch (g.dpy, screen, query_bold, &result);
-	FcPatternDestroy (query_bold);
-	if (bold && !(g.xft_bold = XftFontOpenPattern (g.dpy, bold)))
-		FcPatternDestroy (bold);
-	if (!g.xft_bold)
-		g.xft_bold = XftFontCopy (g.dpy, g.xft_regular);
-
-	FcPattern *italic = XftFontMatch (g.dpy, screen, query_italic, &result);
-	FcPatternDestroy (query_italic);
-	if (italic && !(g.xft_italic = XftFontOpenPattern (g.dpy, italic)))
-		FcPatternDestroy (italic);
-	if (!g.xft_italic)
-		g.xft_italic = XftFontCopy (g.dpy, g.xft_regular);
+	if (!x11_font_open (&g.xft_bold, query_bold))
+		exit_fatal ("cannot open bold font: %s", name);
+	if (!x11_font_open (&g.xft_italic, query_italic))
+		exit_fatal ("cannot open italic font: %s", name);
 }
 
 static void
@@ -6978,7 +7151,7 @@ x11_init (void)
 	};
 
 	// Approximate the average width of a character to half of the em unit.
-	g.ui_vunit = g.xft_regular->height;
+	g.ui_vunit = g.xft_regular.list->font->height;
 	g.ui_hunit = g.ui_vunit / 2;
 	// Base the window's size on the regular font size.
 	// Roughly trying to match the 80x24 default dimensions of terminals.
