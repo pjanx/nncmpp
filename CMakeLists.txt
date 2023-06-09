@@ -28,7 +28,7 @@ include (AddThreads)
 
 find_package (Termo QUIET NO_MODULE)
 add_option (USE_SYSTEM_TERMO
-	"Don't compile our own termo library, use the system one" ${Termo_FOUND})
+	"Don't compile our own termo library, use the system one" "${Termo_FOUND}")
 if (USE_SYSTEM_TERMO)
 	if (NOT Termo_FOUND)
 		message (FATAL_ERROR "System termo library not found")
@@ -49,7 +49,8 @@ else ()
 endif ()
 
 pkg_check_modules (fftw fftw3 fftw3f)
-add_option (WITH_FFTW "Use FFTW to enable spectrum visualisation" ${fftw_FOUND})
+add_option (WITH_FFTW
+	"Use FFTW to enable spectrum visualisation" "${fftw_FOUND}")
 if (WITH_FFTW)
 	if (NOT fftw_FOUND)
 		message (FATAL_ERROR "FFTW not found")
@@ -59,7 +60,7 @@ endif ()
 
 pkg_check_modules (libpulse libpulse)
 add_option (WITH_PULSE
-	"Enable PulseAudio sink volume control" ${libpulse_FOUND})
+	"Enable PulseAudio sink volume control" "${libpulse_FOUND}")
 if (WITH_PULSE)
 	if (NOT libpulse_FOUND)
 		message (FATAL_ERROR "libpulse not found")
@@ -68,7 +69,7 @@ if (WITH_PULSE)
 endif ()
 
 pkg_check_modules (x11 x11 xrender xft fontconfig)
-add_option (WITH_X11 "Use FFTW to enable spectrum visualisation" ${x11_FOUND})
+add_option (WITH_X11 "Use FFTW to enable spectrum visualisation" "${x11_FOUND}")
 if (WITH_X11)
 	if (NOT x11_FOUND)
 		message (FATAL_ERROR "Some X11 libraries were not found")
