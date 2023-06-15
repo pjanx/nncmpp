@@ -2961,6 +2961,7 @@ app_process_left_mouse_click (struct widget *w, int x, int y, int modifiers)
 		tab->item_top = (double) y / w->height
 			* (int) tab->item_count - visible_items / 2;
 		app_invalidate ();
+		app_fix_view_range ();
 		break;
 	}
 	case WIDGET_MESSAGE:
