@@ -28,7 +28,7 @@
 	XX( REMAINS,     remains,      -1, -1, A_UNDERLINE ) \
 	/* Tab bar                                        */ \
 	XX( TAB_BAR,     tab_bar,      -1, -1, A_REVERSE   ) \
-	XX( TAB_ACTIVE,  tab_active,   -1, -1, A_UNDERLINE ) \
+	XX( TAB_ACTIVE,  tab_active,   -1, -1, A_BOLD      ) \
 	/* Listview                                       */ \
 	XX( HEADER,      header,       -1, -1, A_UNDERLINE ) \
 	XX( EVEN,        even,         -1, -1, 0           ) \
