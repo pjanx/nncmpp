@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=nncmpp
+GenericName=MPD client
+Icon=nncmpp
+Exec=nncmpp %U
+StartupNotify=false
+# Not registering a MimeType, because that depends on MPD.
+Categories=AudioVideo;Audio;Player;

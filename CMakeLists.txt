@@ -129,6 +129,12 @@ install (TARGETS ${PROJECT_NAME} DESTINATION ${CMAKE_INSTALL_BINDIR})
 install (FILES LICENSE DESTINATION ${CMAKE_INSTALL_DOCDIR})
 install (DIRECTORY contrib DESTINATION ${CMAKE_INSTALL_DATADIR}/${PROJECT_NAME})
 install (DIRECTORY info DESTINATION ${CMAKE_INSTALL_DATADIR}/${PROJECT_NAME})
+if (WITH_X11)
+	install (FILES ${PROJECT_NAME}.svg
+		DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)
+	install (FILES ${PROJECT_NAME}.desktop
+		DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+endif ()
 
 # Generate documentation from text markup
 find_program (ASCIIDOCTOR_EXECUTABLE asciidoctor)
@@ -175,6 +181,33 @@ foreach (page ${project_MAN_PAGES})
 	install (FILES "${page}"
 		DESTINATION "${CMAKE_INSTALL_MANDIR}/man${CMAKE_MATCH_1}")
 endforeach ()
+
+# Testing
+option (BUILD_TESTING "Build tests" OFF)
+if (BUILD_TESTING)
+	enable_testing ()
+
+	find_program (xmlwf_EXECUTABLE xmlwf)
+	find_program (xmllint_EXECUTABLE xmllint)
+	foreach (xml ${PROJECT_NAME}.svg)
+		if (xmlwf_EXECUTABLE)
+			add_test (test-xmlwf-${xml} ${xmlwf_EXECUTABLE}
+				${PROJECT_SOURCE_DIR}/${xml})
+		endif ()
+		if (xmllint_EXECUTABLE)
+			add_test (test-xmllint-${xml} ${xmllint_EXECUTABLE} --noout
+				${PROJECT_SOURCE_DIR}/${xml})
+		endif ()
+	endforeach ()
+
+	find_program (dfv_EXECUTABLE desktop-file-validate)
+	if (dfv_EXECUTABLE)
+		foreach (df ${PROJECT_NAME}.desktop)
+			add_test (test-dfv-${df} ${dfv_EXECUTABLE}
+				${PROJECT_SOURCE_DIR}/${df})
+		endforeach ()
+	endif ()
+endif ()
 
 # CPack
 set (CPACK_PACKAGE_DESCRIPTION_SUMMARY "Terminal/X11 MPD client")
