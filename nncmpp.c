@@ -1182,9 +1182,6 @@ struct widget;
 /// Draw a widget on the window
 typedef void (*widget_render_fn) (struct widget *self);
 
-/// Extract the contents of container widgets
-typedef struct widget *(*widget_sublayout_fn) (struct widget *self);
-
 /// A minimal abstraction appropriate for both TUI and GUI widgets.
 /// Units for the widget's region are frontend-specific.
 /// Having this as a linked list simplifies layouting and memory management.
@@ -1198,7 +1195,7 @@ struct widget
 	int height;                         ///< Height, initialized by UI methods
 
 	widget_render_fn on_render;         ///< Render callback
-	widget_sublayout_fn on_sublayout;   ///< Optional sublayout callback
+	struct widget *children;            ///< Child widgets of containers
 	chtype attrs;                       ///< Rendition, in Curses terms
 
 	short id;                           ///< Post-layouting identification
@@ -1230,6 +1227,23 @@ struct ui
 
 	bool have_icons;
 };
+
+static void
+widget_destroy (struct widget *self)
+{
+	LIST_FOR_EACH (struct widget, w, self->children)
+		widget_destroy (w);
+	free (self);
+}
+
+static void
+widget_move (struct widget *w, int dx, int dy)
+{
+	w->x += dx;
+	w->y += dy;
+	LIST_FOR_EACH (struct widget, child, w->children)
+		widget_move (child, dx, dy);
+}
 
 /// Replaces negative widths amongst widgets in the sublist by redistributing
 /// any width remaining after all positive claims are satisfied from "width".
@@ -1265,7 +1279,7 @@ widget_redistribute (struct widget *head, int width)
 	int x = 0;
 	LIST_FOR_EACH (struct widget, w, head)
 	{
-		w->x = x;
+		widget_move (w, x - w->x, 0);
 		x += w->width;
 	}
 	return max_height;
@@ -1801,7 +1815,7 @@ app_append_layout (struct layout *l, struct layout *dest)
 	{
 		// Assuming there is no unclaimed vertical space.
 		LIST_FOR_EACH (struct widget, w, l->head)
-			w->y = last->y + last->height;
+			widget_move (w, 0, last->y + last->height - w->y);
 
 		last->next = l->head;
 		l->head->prev = last;
@@ -2176,44 +2190,35 @@ app_layout_row (struct tab *tab, int item_index)
 	return l;
 }
 
-// XXX: This isn't a very clean design, in that part of layouting
-//   is done during the rendering stage.
-static struct widget *
-app_sublayout_list (struct widget *list)
-{
-	struct tab *tab = g.active_tab;
-	int to_show = MIN ((int) tab->item_count - tab->item_top,
-		ceil ((double) list->height / g.ui_vunit));
-
-	struct layout l = {};
-	for (int row = 0; row < to_show; row++)
-	{
-		int item_index = tab->item_top + row;
-		struct layout subl = app_layout_row (tab, item_index);
-		app_flush_layout_full (&subl, list->width, &l);
-	}
-	LIST_FOR_EACH (struct widget, w, l.head)
-	{
-		w->x += list->x;
-		w->y += list->y;
-	}
-	return l.head;
-}
-
 static void
 app_layout_view (struct layout *out, int height)
 {
 	struct layout l = {};
-	struct widget *w = app_push_fill (&l, g.ui->list ());
-	w->id = WIDGET_LIST;
-	w->height = height;
+	struct widget *list = app_push_fill (&l, g.ui->list ());
+	list->id = WIDGET_LIST;
+	list->height = height;
+	list->width = g.ui_width;
 
 	struct tab *tab = g.active_tab;
-	if ((int) tab->item_count * g.ui_vunit > w->height)
+	if ((int) tab->item_count * g.ui_vunit > list->height)
 	{
-		app_push (&l, g.ui->scrollbar (APP_ATTR (SCROLLBAR)))
-			->id = WIDGET_SCROLLBAR;
+		struct widget *scrollbar = g.ui->scrollbar (APP_ATTR (SCROLLBAR));
+		list->width -= scrollbar->width;
+		app_push (&l, scrollbar)->id = WIDGET_SCROLLBAR;
 	}
+
+	int to_show = MIN ((int) tab->item_count - tab->item_top,
+		ceil ((double) list->height / g.ui_vunit));
+
+	struct layout children = {};
+	for (int row = 0; row < to_show; row++)
+	{
+		int item_index = tab->item_top + row;
+		struct layout subl = app_layout_row (tab, item_index);
+		// TODO: Change layouting so that we don't need to know list->width.
+		app_flush_layout_full (&subl, list->width, &children);
+	}
+	list->children = children.head;
 
 	app_flush_layout (&l, out);
 }
@@ -2407,7 +2412,7 @@ app_on_refresh (void *user_data)
 		available_height -= bottom.tail->y + bottom.tail->height;
 
 	LIST_FOR_EACH (struct widget, w, g.widgets.head)
-		free (w);
+		widget_destroy (w);
 
 	g.widgets = (struct layout) {};
 	app_append_layout (&top, &g.widgets);
@@ -2645,7 +2650,7 @@ incremental_search_on_changed (void)
 		LIST_FOR_EACH (struct widget, w, tab->on_item_layout (index).head)
 		{
 			str_append (&s, w->text);
-			free (w);
+			widget_destroy (w);
 		}
 
 		size_t len;
@@ -5706,11 +5711,8 @@ tui_make_scrollbar (chtype attrs)
 static void
 tui_render_list (struct widget *self)
 {
-	LIST_FOR_EACH (struct widget, w, self->on_sublayout (self))
-	{
+	LIST_FOR_EACH (struct widget, w, self->children)
 		w->on_render (w);
-		free (w);
-	}
 }
 
 static struct widget *
@@ -5720,7 +5722,6 @@ tui_make_list (void)
 	w->width = -1;
 	w->height = g.active_tab->item_count;
 	w->on_render = tui_render_list;
-	w->on_sublayout = app_sublayout_list;
 	return w;
 }
 
@@ -6490,11 +6491,8 @@ x11_render_list (struct widget *self)
 		&(XRectangle) { self->x, self->y, self->width, self->height }, 1);
 
 	x11_render_padding (self);
-	LIST_FOR_EACH (struct widget, w, self->on_sublayout (self))
-	{
+	LIST_FOR_EACH (struct widget, w, self->children)
 		w->on_render (w);
-		free (w);
-	}
 
 	XftDrawSetClip (g.xft_draw, None);
 }
@@ -6504,7 +6502,6 @@ x11_make_list (void)
 {
 	struct widget *w = xcalloc (1, sizeof *w + 1);
 	w->on_render = x11_render_list;
-	w->on_sublayout = app_sublayout_list;
 	return w;
 }
 
@@ -6782,15 +6779,9 @@ x11_find_text (struct widget *list, int x, int y)
 	if (!target)
 		return NULL;
 
-	if (target->on_sublayout)
-	{
-		struct widget *sublist = target->on_sublayout (target);
-		char *result = x11_find_text (sublist, x, y);
-		LIST_FOR_EACH (struct widget, w, sublist)
-			free (w);
-		if (result)
-			return result;
-	}
+	char *result = x11_find_text (target->children, x, y);
+	if (result)
+		return result;
 	return xstrdup (target->text);
 }
 
