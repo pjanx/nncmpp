@@ -7,6 +7,8 @@ Unreleased
 
  * Escape no longer quits the program
 
+ * X11: added an icon and a desktop entry file
+
  * X11: added support for font fallbacks and italic fonts
 
  * X11: fixed rendering of overflowing, partially visible list items
