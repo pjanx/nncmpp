@@ -1792,15 +1792,12 @@ app_invalidate (void)
 }
 
 static void
-app_flush_layout_to (struct layout *l, int width, struct layout *dest)
+app_append_layout (struct layout *l, struct layout *dest)
 {
-	hard_assert (l != NULL && l->head != NULL);
-	widget_redistribute (l->head, width);
-
 	struct widget *last = dest->tail;
 	if (!last)
 		*dest = *l;
-	else
+	else if (l->head)
 	{
 		// Assuming there is no unclaimed vertical space.
 		LIST_FOR_EACH (struct widget, w, l->head)
@@ -1810,12 +1807,22 @@ app_flush_layout_to (struct layout *l, int width, struct layout *dest)
 		l->head->prev = last;
 		dest->tail = l->tail;
 	}
+
+	*l = (struct layout) {};
 }
 
 static void
-app_flush_layout (struct layout *l)
+app_flush_layout_full (struct layout *l, int width, struct layout *dest)
 {
-	app_flush_layout_to (l, g.ui_width, &g.widgets);
+	hard_assert (l != NULL && l->head != NULL);
+	widget_redistribute (l->head, width);
+	app_append_layout (l, dest);
+}
+
+static void
+app_flush_layout (struct layout *l, struct layout *out)
+{
+	app_flush_layout_full (l, g.ui_width, out);
 }
 
 static struct widget *
@@ -1836,19 +1843,19 @@ app_push_fill (struct layout *l, struct widget *w)
 /// Write the given UTF-8 string padded with spaces.
 /// @param[in] attrs  Text attributes for the text, including padding.
 static void
-app_layout_text (const char *str, chtype attrs)
+app_layout_text (const char *str, chtype attrs, struct layout *out)
 {
 	struct layout l = {};
 	app_push (&l, g.ui->padding (attrs, 0.25, 1));
 	app_push_fill (&l, g.ui->label (attrs, str));
 	app_push (&l, g.ui->padding (attrs, 0.25, 1));
-	app_flush_layout (&l);
+	app_flush_layout (&l, out);
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 static void
-app_layout_song_info (void)
+app_layout_song_info (struct layout *out)
 {
 	compact_map_t map;
 	if (!(map = item_list_get (&g.playlist, g.song)))
@@ -1880,7 +1887,7 @@ app_layout_song_info (void)
 		app_push (&l, g.ui->label (attrs[1], title));
 		app_push_fill (&l, g.ui->padding (attrs[0], 0, 1));
 		app_push (&l, g.ui->padding (attrs[0], 0.25, 1));
-		app_flush_layout (&l);
+		app_flush_layout (&l, out);
 	}
 
 	// Showing a blank line is better than having the controls jump around
@@ -1919,7 +1926,7 @@ app_layout_song_info (void)
 
 	app_push_fill (&l, g.ui->padding (attrs[0], 0, 1));
 	app_push (&l, g.ui->padding (attrs[0], 0.25, 1));
-	app_flush_layout (&l);
+	app_flush_layout (&l, out);
 }
 
 static char *
@@ -1939,11 +1946,11 @@ app_time_string (int seconds)
 }
 
 static void
-app_layout_status (void)
+app_layout_status (struct layout *out)
 {
 	bool stopped = g.state == PLAYER_STOPPED;
 	if (!stopped)
-		app_layout_song_info ();
+		app_layout_song_info (out);
 
 	chtype attrs[2] = { APP_ATTR (NORMAL), APP_ATTR (HIGHLIGHT) };
 	struct layout l = {};
@@ -2014,11 +2021,11 @@ app_layout_status (void)
 	str_free (&volume);
 
 	app_push (&l, g.ui->padding (attrs[0], 0.25, 1));
-	app_flush_layout (&l);
+	app_flush_layout (&l, out);
 }
 
 static void
-app_layout_tabs (void)
+app_layout_tabs (struct layout *out)
 {
 	chtype attrs[2] = { APP_ATTR (TAB_BAR), APP_ATTR (TAB_ACTIVE) };
 	struct layout l = {};
@@ -2053,30 +2060,30 @@ app_layout_tabs (void)
 	}
 #endif  // WITH_FFTW
 
-	app_flush_layout (&l);
+	app_flush_layout (&l, out);
 }
 
 static void
-app_layout_header (void)
+app_layout_header (struct layout *out)
 {
 	if (g.client.state == MPD_CONNECTED)
 	{
 		struct layout lt = {};
 		app_push_fill (&lt, g.ui->padding (APP_ATTR (NORMAL), 0, 0.125));
-		app_flush_layout (&lt);
+		app_flush_layout (&lt, out);
 
-		app_layout_status ();
+		app_layout_status (out);
 
 		struct layout lb = {};
 		app_push_fill (&lb, g.ui->padding (APP_ATTR (NORMAL), 0, 0.125));
-		app_flush_layout (&lb);
+		app_flush_layout (&lb, out);
 	}
 
-	app_layout_tabs ();
+	app_layout_tabs (out);
 
 	const char *header = g.active_tab->header;
 	if (header)
-		app_layout_text (header, APP_ATTR (HEADER));
+		app_layout_text (header, APP_ATTR (HEADER), out);
 }
 
 static struct widget *
@@ -2183,7 +2190,7 @@ app_sublayout_list (struct widget *list)
 	{
 		int item_index = tab->item_top + row;
 		struct layout subl = app_layout_row (tab, item_index);
-		app_flush_layout_to (&subl, list->width, &l);
+		app_flush_layout_full (&subl, list->width, &l);
 	}
 	LIST_FOR_EACH (struct widget, w, l.head)
 	{
@@ -2194,16 +2201,12 @@ app_sublayout_list (struct widget *list)
 }
 
 static void
-app_layout_view (void)
+app_layout_view (struct layout *out, int height)
 {
-	// XXX: Expecting the status bar to always be there, one row tall.
-	struct widget *last = g.widgets.tail;
-	int unavailable_height = last->y + last->height + g.ui_vunit;
-
 	struct layout l = {};
 	struct widget *w = app_push_fill (&l, g.ui->list ());
 	w->id = WIDGET_LIST;
-	w->height = g.ui_height - unavailable_height;
+	w->height = height;
 
 	struct tab *tab = g.active_tab;
 	if ((int) tab->item_count * g.ui_vunit > w->height)
@@ -2212,7 +2215,7 @@ app_layout_view (void)
 			->id = WIDGET_SCROLLBAR;
 	}
 
-	app_flush_layout (&l);
+	app_flush_layout (&l, out);
 }
 
 static void
@@ -2258,7 +2261,7 @@ app_layout_mpd_status_playlist (struct layout *l, chtype attrs)
 }
 
 static void
-app_layout_mpd_status (void)
+app_layout_mpd_status (struct layout *out)
 {
 	struct layout l = {};
 	chtype attrs[2] = { APP_ATTR (NORMAL), APP_ATTR (HIGHLIGHT) };
@@ -2311,11 +2314,11 @@ app_layout_mpd_status (void)
 	}
 
 	app_push (&l, g.ui->padding (attrs[0], 0.25, 1));
-	app_flush_layout (&l);
+	app_flush_layout (&l, out);
 }
 
 static void
-app_layout_statusbar (void)
+app_layout_statusbar (struct layout *out)
 {
 	struct layout l = {};
 	chtype attrs[2] = { APP_ATTR (NORMAL), APP_ATTR (HIGHLIGHT) };
@@ -2331,7 +2334,7 @@ app_layout_statusbar (void)
 		}
 		app_push (&l, g.ui->padding (attrs[0], 0.25, 1));
 
-		app_flush_layout (&l);
+		app_flush_layout (&l, out);
 		LIST_FOR_EACH (struct widget, w, l.head)
 			w->id = WIDGET_MESSAGE;
 	}
@@ -2340,14 +2343,14 @@ app_layout_statusbar (void)
 		app_push (&l, g.ui->padding (attrs[0], 0.25, 1));
 		app_push (&l, g.ui->editor (attrs[1]));
 		app_push (&l, g.ui->padding (attrs[0], 0.25, 1));
-		app_flush_layout (&l);
+		app_flush_layout (&l, out);
 	}
 	else if (g.client.state == MPD_CONNECTED)
-		app_layout_mpd_status ();
+		app_layout_mpd_status (out);
 	else if (g.client.state == MPD_CONNECTING)
-		app_layout_text ("Connecting to MPD...", attrs[0]);
+		app_layout_text ("Connecting to MPD...", attrs[0], out);
 	else if (g.client.state == MPD_DISCONNECTED)
-		app_layout_text ("Disconnected", attrs[0]);
+		app_layout_text ("Disconnected", attrs[0], out);
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -2393,14 +2396,23 @@ app_on_refresh (void *user_data)
 	(void) user_data;
 	poller_idle_reset (&g.refresh_event);
 
+	struct layout top = {}, bottom = {};
+	app_layout_header (&top);
+	app_layout_statusbar (&bottom);
+
+	int available_height = g.ui_height;
+	if (top.tail)
+		available_height -= top.tail->y + top.tail->height;
+	if (bottom.tail)
+		available_height -= bottom.tail->y + bottom.tail->height;
+
 	LIST_FOR_EACH (struct widget, w, g.widgets.head)
 		free (w);
 
 	g.widgets = (struct layout) {};
-
-	app_layout_header ();
-	app_layout_view ();
-	app_layout_statusbar ();
+	app_append_layout (&top, &g.widgets);
+	app_layout_view (&g.widgets, available_height);
+	app_append_layout (&bottom, &g.widgets);
 
 	app_fix_view_range();
 
