@@ -1396,7 +1396,7 @@ static struct app_context
 	// User interface:
 
 	struct ui *ui;                      ///< User interface interface
-	struct layout widgets;              ///< Layouted widgets
+	struct widget *widgets;             ///< Layouted widgets
 	int ui_width;                       ///< Window width
 	int ui_height;                      ///< Window height
 	int ui_hunit;                       ///< Horizontal unit
@@ -2100,31 +2100,6 @@ app_layout_header (struct layout *out)
 		app_layout_text (header, APP_ATTR (HEADER), out);
 }
 
-static struct widget *
-app_widget_by_id (int id)
-{
-	LIST_FOR_EACH (struct widget, w, g.widgets.head)
-		if (w->id == id)
-			return w;
-	return NULL;
-}
-
-static int
-app_visible_items_height (void)
-{
-	struct widget *list = app_widget_by_id (WIDGET_LIST);
-	hard_assert (list != NULL);
-
-	// The raw number of items that would have fit on the terminal
-	return MAX (0, list->height);
-}
-
-static int
-app_visible_items (void)
-{
-	return app_visible_items_height () / g.ui_vunit;
-}
-
 /// Figure out scrollbar appearance.  @a s is the minimal slider length as well
 /// as the scrollbar resolution per @a visible item.
 struct scrollbar { long length, start; }
@@ -2360,6 +2335,31 @@ app_layout_statusbar (struct layout *out)
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
+static struct widget *
+app_widget_by_id (int id)
+{
+	LIST_FOR_EACH (struct widget, w, g.widgets)
+		if (w->id == id)
+			return w;
+	return NULL;
+}
+
+static int
+app_visible_items_height (void)
+{
+	struct widget *list = app_widget_by_id (WIDGET_LIST);
+	hard_assert (list != NULL);
+
+	// The raw number of items that would have fit on the terminal
+	return MAX (0, list->height);
+}
+
+static int
+app_visible_items (void)
+{
+	return app_visible_items_height () / g.ui_vunit;
+}
+
 /// Checks what items are visible and returns if the range was alright
 static bool
 app_fix_view_range (void)
@@ -2411,13 +2411,14 @@ app_on_refresh (void *user_data)
 	if (bottom.tail)
 		available_height -= bottom.tail->y + bottom.tail->height;
 
-	LIST_FOR_EACH (struct widget, w, g.widgets.head)
+	LIST_FOR_EACH (struct widget, w, g.widgets)
 		widget_destroy (w);
 
-	g.widgets = (struct layout) {};
-	app_append_layout (&top, &g.widgets);
-	app_layout_view (&g.widgets, available_height);
-	app_append_layout (&bottom, &g.widgets);
+	struct layout widgets = {};
+	app_append_layout (&top, &widgets);
+	app_layout_view (&widgets, available_height);
+	app_append_layout (&bottom, &widgets);
+	g.widgets = widgets.head;
 
 	app_fix_view_range();
 
@@ -3002,7 +3003,7 @@ app_process_mouse (termo_mouse_event_t type, int x, int y, int button,
 	}
 
 	struct widget *target = NULL;
-	LIST_FOR_EACH (struct widget, w, g.widgets.head)
+	LIST_FOR_EACH (struct widget, w, g.widgets)
 		if (x >= w->x && x < w->x + w->width
 		 && y >= w->y && y < w->y + w->height)
 			target = w;
@@ -5756,7 +5757,7 @@ tui_render (void)
 	erase ();
 	curs_set (0);
 
-	LIST_FOR_EACH (struct widget, w, g.widgets.head)
+	LIST_FOR_EACH (struct widget, w, g.widgets)
 		if (w->width >= 0 && w->height >= 0)
 			w->on_render (w);
 }
@@ -6552,7 +6553,7 @@ x11_render (void)
 {
 	XRenderFillRectangle (g.dpy, PictOpSrc, g.x11_pixmap_picture,
 		&x11_default_bg, 0, 0, g.ui_width, g.ui_height);
-	LIST_FOR_EACH (struct widget, w, g.widgets.head)
+	LIST_FOR_EACH (struct widget, w, g.widgets)
 		if (w->width && w->height)
 			w->on_render (w);
 
@@ -6793,7 +6794,7 @@ x11_process_press (int x, int y, int button, int modifiers)
 	if (button != Button3)
 		goto out;
 
-	char *text = x11_find_text (g.widgets.head, x, y);
+	char *text = x11_find_text (g.widgets, x, y);
 	if (!text || !*(cstr_strip_in_place (text, " \t")))
 	{
 		free (text);
