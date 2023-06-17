@@ -69,7 +69,7 @@ if (WITH_PULSE)
 endif ()
 
 pkg_check_modules (x11 x11 xrender xft fontconfig)
-add_option (WITH_X11 "Use FFTW to enable spectrum visualisation" "${x11_FOUND}")
+add_option (WITH_X11 "Build with X11 support" "${x11_FOUND}")
 if (WITH_X11)
 	if (NOT x11_FOUND)
 		message (FATAL_ERROR "Some X11 libraries were not found")
