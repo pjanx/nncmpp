@@ -7304,9 +7304,7 @@ app_on_message_timer (void *user_data)
 {
 	(void) user_data;
 
-	cstr_set (&g.message, NULL);
-	cstr_set (&g.message_detail, NULL);
-	app_invalidate ();
+	app_hide_message ();
 }
 
 static void
