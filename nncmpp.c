@@ -5555,7 +5555,7 @@ tui_make_label (chtype attrs, const char *label)
 	struct widget *w = xcalloc (1, sizeof *w + len + 1);
 	w->on_render = tui_render_label;
 	w->attrs = attrs;
-	memcpy (w + 1, label, len);
+	memcpy (w->text, label, len);
 
 	struct row_buffer buf = row_buffer_make ();
 	row_buffer_append (&buf, w->text, w->attrs);
@@ -6228,7 +6228,7 @@ x11_make_label (chtype attrs, const char *label)
 	struct widget *w = xcalloc (1, sizeof *w + normalized_len);
 	w->on_render = x11_render_label;
 	w->attrs = attrs;
-	memcpy (w + 1, normalized, normalized_len);
+	memcpy (w->text, normalized, normalized_len);
 	free (normalized);
 
 	struct x11_font *font = x11_widget_font (w);
