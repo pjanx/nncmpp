@@ -70,23 +70,15 @@ enum
 #define LIBERTY_WANT_PROTO_HTTP
 #define LIBERTY_WANT_PROTO_MPD
 #include "liberty/liberty.c"
-#include "liberty/liberty-tui.c"
 
-#define HAVE_LIBERTY
-#include "line-editor.c"
+#ifdef WITH_X11
+#define LIBERTY_XUI_WANT_X11
+#endif // WITH_X11
+#include "liberty/liberty-xui.c"
 
 #include <dirent.h>
 #include <locale.h>
 #include <math.h>
-#include <sys/ioctl.h>
-#include <termios.h>
-
-// ncurses is notoriously retarded for input handling, we need something
-// different if only to receive mouse events reliably.
-//
-// 2021 update: ncurses is mostly reliable now, though rxvt-unicode only
-// supports the 1006 mode that ncurses also supports mode starting with 9.25.
-#include "termo.h"
 
 // We need cURL to extract links from Internet stream playlists.  It'd be way
 // too much code to do this all by ourselves, and there's nothing better around.
@@ -108,28 +100,11 @@ enum
 #include <pulse/sample.h>
 #endif  // WITH_PULSE
 
-// Elementary port of the TUI to X11.
-#ifdef WITH_X11
-#include <X11/Xatom.h>
-#include <X11/Xlib.h>
-#include <X11/keysym.h>
-#include <X11/XKBlib.h>
-#include <X11/Xft/Xft.h>
-#endif  // WITH_X11
-
 #define APP_TITLE  PROGRAM_NAME         ///< Left top corner
 
 #include "nncmpp-actions.h"
 
 // --- Utilities ---------------------------------------------------------------
-
-static int64_t
-clock_msec (clockid_t clock)
-{
-	struct timespec tp;
-	hard_assert (clock_gettime (clock, &tp) != -1);
-	return (int64_t) tp.tv_sec * 1000 + (int64_t) tp.tv_nsec / 1000000;
-}
 
 static void
 shell_quote (const char *str, struct str *output)
@@ -1177,39 +1152,13 @@ enum
 	WIDGET_LIST, WIDGET_SCROLLBAR, WIDGET_MESSAGE,
 };
 
-struct widget;
-
-/// Draw a widget on the window
-typedef void (*widget_render_fn) (struct widget *self);
-
-/// A minimal abstraction appropriate for both TUI and GUI widgets.
-/// Units for the widget's region are frontend-specific.
-/// Having this as a linked list simplifies layouting and memory management.
-struct widget
-{
-	LIST_HEADER (struct widget)
-
-	int x;                              ///< X coordinate
-	int y;                              ///< Y coordinate
-	int width;                          ///< Width, initialized by UI methods
-	int height;                         ///< Height, initialized by UI methods
-
-	widget_render_fn on_render;         ///< Render callback
-	struct widget *children;            ///< Child widgets of containers
-	chtype attrs;                       ///< Rendition, in Curses terms
-
-	short id;                           ///< Post-layouting identification
-	short subid;                        ///< Action ID/Tab index/...
-	char text[];                        ///< Any text label
-};
-
 struct layout
 {
 	struct widget *head;
 	struct widget *tail;
 };
 
-struct ui
+struct app_ui
 {
 	struct widget *(*padding) (chtype attrs, float width, float height);
 	struct widget *(*label) (chtype attrs, const char *label);
@@ -1220,30 +1169,8 @@ struct ui
 	struct widget *(*list) (void);
 	struct widget *(*editor) (chtype attrs);
 
-	void (*render) (void);
-	void (*flip) (void);
-	void (*winch) (void);
-	void (*destroy) (void);
-
 	bool have_icons;
 };
-
-static void
-widget_destroy (struct widget *self)
-{
-	LIST_FOR_EACH (struct widget, w, self->children)
-		widget_destroy (w);
-	free (self);
-}
-
-static void
-widget_move (struct widget *w, int dx, int dy)
-{
-	w->x += dx;
-	w->y += dy;
-	LIST_FOR_EACH (struct widget, child, w->children)
-		widget_move (child, dx, dy);
-}
 
 /// Replaces negative widths amongst widgets in the sublist by redistributing
 /// any width remaining after all positive claims are satisfied from "width".
@@ -1327,24 +1254,6 @@ enum player_state { PLAYER_STOPPED, PLAYER_PLAYING, PLAYER_PAUSED };
 // around a pointer to this, hence it is a simple global variable as well.
 // There is enough global state as it is.
 
-#ifdef WITH_X11
-
-/// Wraps Xft fonts into a linked list with fallbacks.
-struct x11_font_link
-{
-	struct x11_font_link *next;
-	XftFont *font;
-};
-
-struct x11_font
-{
-	struct x11_font_link *list;         ///< Fonts of varying Unicode coverage
-	FcPattern *pattern;                 ///< Original unsubstituted pattern
-	FcCharSet *unavailable;             ///< Couldn't find a font for these
-};
-
-#endif  // WITH_X11
-
 static struct app_context
 {
 	// Event loop:
@@ -1395,14 +1304,8 @@ static struct app_context
 
 	// User interface:
 
-	struct ui *ui;                      ///< User interface interface
-	struct widget *widgets;             ///< Layouted widgets
-	int ui_width;                       ///< Window width
-	int ui_height;                      ///< Window height
-	int ui_hunit;                       ///< Horizontal unit
-	int ui_vunit;                       ///< Vertical unit
-	bool ui_focused;                    ///< Whether the window has focus
-	short ui_dragging;                  ///< ID of any dragged widget
+	struct app_ui *ui;                  ///< User interface interface
+	int ui_dragging;                    ///< ID of any dragged widget
 
 #ifdef WITH_FFTW
 	struct spectrum spectrum;           ///< Spectrum analyser
@@ -1415,36 +1318,10 @@ static struct app_context
 #endif  // WITH_PULSE
 	bool pulse_control_requested;       ///< PulseAudio control desired by user
 
-#ifdef WITH_X11
-	XIM x11_im;                         ///< Input method
-	XIC x11_ic;                         ///< Input method context
-	Display *dpy;                       ///< X display handle
-	struct poller_fd x11_event;         ///< X11 events on wire
-	struct poller_idle xpending_event;  ///< X11 events possibly in I/O queues
-	int xkb_base_event_code;            ///< Xkb base event code
-	Window x11_window;                  ///< Application window
-	Pixmap x11_pixmap;                  ///< Off-screen bitmap
-	Region x11_clip;                    ///< Invalidated region
-	Picture x11_pixmap_picture;         ///< XRender wrap for x11_pixmap
-	XftDraw *xft_draw;                  ///< Xft rendering context
-	struct x11_font xft_regular;        ///< Regular font
-	struct x11_font xft_bold;           ///< Bold font
-	struct x11_font xft_italic;         ///< Italic font
-	char *x11_selection;                ///< CLIPBOARD selection
-
-	XRenderColor x_fg[ATTRIBUTE_COUNT]; ///< Foreground per attribute
-	XRenderColor x_bg[ATTRIBUTE_COUNT]; ///< Background per attribute
-#endif  // WITH_X11
-
 	struct line_editor editor;          ///< Line editor
-	struct poller_idle refresh_event;   ///< Refresh the window's contents
-	struct poller_idle flip_event;      ///< Draw rendered widgets on screen
 
 	// Terminal:
 
-	termo_t *tk;                        ///< termo handle (TUI/X11)
-	struct poller_timer tk_timer;       ///< termo timeout timer
-	bool locale_is_utf8;                ///< The locale is Unicode
 	bool use_partial_boxes;             ///< Use Unicode box drawing chars
 
 	struct attrs attrs[ATTRIBUTE_COUNT];
@@ -1693,6 +1570,13 @@ app_init_attributes (void)
 #undef XX
 }
 
+static bool
+app_on_insufficient_color (void)
+{
+	app_init_attributes ();
+	return true;
+}
+
 static void
 app_init_context (void)
 {
@@ -1715,22 +1599,6 @@ app_init_context (void)
 #ifdef WITH_PULSE
 	pulse_init (&g.pulse, NULL);
 #endif  // WITH_PULSE
-
-	TERMO_CHECK_VERSION;
-	if (!(g.tk = termo_new (STDIN_FILENO, NULL, TERMO_FLAG_NOSTART)))
-		exit_fatal ("failed to initialize termo");
-
-	// This is also approximately what libunistring does internally,
-	// since the locale name is canonicalized by locale_charset().
-	// Note that non-Unicode locales are handled pretty inefficiently.
-	g.locale_is_utf8 = !strcasecmp_ascii (locale_charset (), "UTF-8");
-
-	// It doesn't work 100% (e.g. incompatible with undelining in urxvt)
-	// TODO: make this configurable
-	g.use_partial_boxes = g.locale_is_utf8;
-
-	// Presumably, although not necessarily; unsure if queryable at all
-	g.ui_focused = true;
 
 	app_init_attributes ();
 }
@@ -1764,9 +1632,6 @@ app_free_context (void)
 	poller_free (&g.poller);
 	free (g.message);
 	free (g.message_detail);
-
-	if (g.tk)
-		termo_destroy (g.tk);
 }
 
 static void
@@ -1779,31 +1644,7 @@ app_quit (void)
 	g.polling = false;
 }
 
-static bool
-app_is_character_in_locale (ucs4_t ch)
-{
-	// Avoid the overhead joined with calling iconv() for all characters.
-	if (g.locale_is_utf8)
-		return true;
-
-	// The library really creates a new conversion object every single time
-	// and doesn't provide any smarter APIs.  Luckily, most users use UTF-8.
-	size_t len;
-	char *tmp = u32_conv_to_encoding (locale_charset (), iconveh_error,
-		&ch, 1, NULL, NULL, &len);
-	if (!tmp)
-		return false;
-	free (tmp);
-	return true;
-}
-
 // --- Layouting ---------------------------------------------------------------
-
-static void
-app_invalidate (void)
-{
-	poller_idle_set (&g.refresh_event);
-}
 
 static void
 app_append_layout (struct layout *l, struct layout *dest)
@@ -1836,7 +1677,7 @@ app_flush_layout_full (struct layout *l, int width, struct layout *dest)
 static void
 app_flush_layout (struct layout *l, struct layout *out)
 {
-	app_flush_layout_full (l, g.ui_width, out);
+	app_flush_layout_full (l, g_xui.width, out);
 }
 
 static struct widget *
@@ -2060,7 +1901,7 @@ app_layout_tabs (struct layout *out)
 		struct widget *w = app_push (&l,
 			g.ui->label (attrs[iter == g.active_tab], iter->name));
 		w->id = WIDGET_TAB;
-		w->subid = ++i;
+		w->userdata = ++i;
 	}
 
 	app_push_fill (&l, g.ui->padding (attrs[0], 1, 1));
@@ -2135,12 +1976,12 @@ app_layout_row (struct tab *tab, int item_index)
 
 	bool override_colors = true;
 	if (item_index == tab->item_selected)
-		row_attrs = g.ui_focused
+		row_attrs = g_xui.focused
 			? APP_ATTR (SELECTION) : APP_ATTR (DEFOCUSED);
 	else if (tab->item_mark > -1 &&
 	   ((item_index >= tab->item_mark && item_index <= tab->item_selected)
 	 || (item_index >= tab->item_selected && item_index <= tab->item_mark)))
-		row_attrs = g.ui_focused
+		row_attrs = g_xui.focused
 			? APP_ATTR (MULTISELECT) : APP_ATTR (DEFOCUSED);
 	else
 		override_colors = false;
@@ -2172,10 +2013,10 @@ app_layout_view (struct layout *out, int height)
 	struct widget *list = app_push_fill (&l, g.ui->list ());
 	list->id = WIDGET_LIST;
 	list->height = height;
-	list->width = g.ui_width;
+	list->width = g_xui.width;
 
 	struct tab *tab = g.active_tab;
-	if ((int) tab->item_count * g.ui_vunit > list->height)
+	if ((int) tab->item_count * g_xui.vunit > list->height)
 	{
 		struct widget *scrollbar = g.ui->scrollbar (APP_ATTR (SCROLLBAR));
 		list->width -= scrollbar->width;
@@ -2183,7 +2024,7 @@ app_layout_view (struct layout *out, int height)
 	}
 
 	int to_show = MIN ((int) tab->item_count - tab->item_top,
-		ceil ((double) list->height / g.ui_vunit));
+		ceil ((double) list->height / g_xui.vunit));
 
 	struct layout children = {};
 	for (int row = 0; row < to_show; row++)
@@ -2338,7 +2179,7 @@ app_layout_statusbar (struct layout *out)
 static struct widget *
 app_widget_by_id (int id)
 {
-	LIST_FOR_EACH (struct widget, w, g.widgets)
+	LIST_FOR_EACH (struct widget, w, g_xui.widgets)
 		if (w->id == id)
 			return w;
 	return NULL;
@@ -2357,7 +2198,7 @@ app_visible_items_height (void)
 static int
 app_visible_items (void)
 {
-	return app_visible_items_height () / g.ui_vunit;
+	return app_visible_items_height () / g_xui.vunit;
 }
 
 /// Checks what items are visible and returns if the range was alright
@@ -2385,45 +2226,27 @@ app_fix_view_range (void)
 }
 
 static void
-app_on_flip (void *user_data)
+app_layout (void)
 {
-	(void) user_data;
-	poller_idle_reset (&g.flip_event);
-
-	// Waste of time, and may cause X11 to render uninitialised pixmaps.
-	if (g.polling && !g.refresh_event.active)
-		g.ui->flip ();
-}
-
-static void
-app_on_refresh (void *user_data)
-{
-	(void) user_data;
-	poller_idle_reset (&g.refresh_event);
-
 	struct layout top = {}, bottom = {};
 	app_layout_header (&top);
 	app_layout_statusbar (&bottom);
 
-	int available_height = g.ui_height;
+	int available_height = g_xui.height;
 	if (top.tail)
 		available_height -= top.tail->y + top.tail->height;
 	if (bottom.tail)
 		available_height -= bottom.tail->y + bottom.tail->height;
 
-	LIST_FOR_EACH (struct widget, w, g.widgets)
-		widget_destroy (w);
-
 	struct layout widgets = {};
 	app_append_layout (&top, &widgets);
 	app_layout_view (&widgets, available_height);
 	app_append_layout (&bottom, &widgets);
-	g.widgets = widgets.head;
+	g_xui.widgets = widgets.head;
 
 	app_fix_view_range();
 
-	g.ui->render ();
-	poller_idle_set (&g.flip_event);
+	curs_set (0);
 }
 
 // --- Actions -----------------------------------------------------------------
@@ -2433,7 +2256,7 @@ static bool
 app_scroll (int n)
 {
 	g.active_tab->item_top += n;
-	app_invalidate ();
+	xui_invalidate ();
 	return app_fix_view_range ();
 }
 
@@ -2477,7 +2300,7 @@ app_move_selection (int diff)
 
 	bool result = !diff || tab->item_selected != fixed;
 	tab->item_selected = fixed;
-	app_invalidate ();
+	xui_invalidate ();
 
 	app_ensure_selection_visible ();
 	return result;
@@ -2489,7 +2312,7 @@ app_show_message (char *message, char *detail)
 	cstr_set (&g.message, message);
 	cstr_set (&g.message_detail, detail);
 	poller_timer_set (&g.message_timer, 5000);
-	app_invalidate ();
+	xui_invalidate ();
 }
 
 static void
@@ -2501,7 +2324,19 @@ app_hide_message (void)
 	cstr_set (&g.message, NULL);
 	cstr_set (&g.message_detail, NULL);
 	poller_timer_reset (&g.message_timer);
-	app_invalidate ();
+	xui_invalidate ();
+}
+
+static void
+app_on_clipboard_copy (const char *text)
+{
+	app_show_message (xstrdup ("Text copied to clipboard: "), xstrdup (text));
+}
+
+static struct widget *
+app_make_label (chtype attrs, const char *label)
+{
+	return g_xui.ui->label (attrs, 0, label);
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -2510,7 +2345,7 @@ static void
 app_prepend_tab (struct tab *tab)
 {
 	LIST_PREPEND (g.tabs, tab);
-	app_invalidate ();
+	xui_invalidate ();
 }
 
 static void
@@ -2521,7 +2356,7 @@ app_switch_tab (struct tab *tab)
 
 	g.last_tab = g.active_tab;
 	g.active_tab = tab;
-	app_invalidate ();
+	xui_invalidate ();
 }
 
 static bool
@@ -2694,7 +2529,7 @@ app_process_action (enum action action)
 	struct tab *tab = g.active_tab;
 	if (tab->on_action && tab->on_action (action))
 	{
-		app_invalidate ();
+		xui_invalidate ();
 		return true;
 	}
 
@@ -2707,7 +2542,7 @@ app_process_action (enum action action)
 		return true;
 	case ACTION_REDRAW:
 		clear ();
-		app_invalidate ();
+		xui_invalidate ();
 		return true;
 
 	case ACTION_ABORT:
@@ -2715,14 +2550,14 @@ app_process_action (enum action action)
 		if (tab->item_mark > -1)
 		{
 			tab->item_mark = -1;
-			app_invalidate ();
+			xui_invalidate ();
 			return true;
 		}
 		return false;
 	case ACTION_MPD_COMMAND:
 		line_editor_start (&g.editor, ':');
 		g.editor.on_end = app_on_mpd_command_editor_end;
-		app_invalidate ();
+		xui_invalidate ();
 		app_hide_message ();
 		return true;
 	default:
@@ -2735,7 +2570,7 @@ app_process_action (enum action action)
 		 || !tab->item_count || tab->item_selected < 0)
 			return false;
 
-		app_invalidate ();
+		xui_invalidate ();
 		if (tab->item_mark > -1)
 			tab->item_mark = -1;
 		else
@@ -2745,7 +2580,7 @@ app_process_action (enum action action)
 		line_editor_start (&g.editor, '/');
 		g.editor.on_changed = incremental_search_on_changed;
 		g.editor.on_end = incremental_search_on_end;
-		app_invalidate ();
+		xui_invalidate ();
 		app_hide_message ();
 		return true;
 
@@ -2808,7 +2643,7 @@ app_process_action (enum action action)
 		{
 			g.active_tab->item_selected = 0;
 			app_ensure_selection_visible ();
-			app_invalidate ();
+			xui_invalidate ();
 		}
 		return true;
 	case ACTION_GOTO_BOTTOM:
@@ -2817,7 +2652,7 @@ app_process_action (enum action action)
 			g.active_tab->item_selected =
 				MAX (0, (int) g.active_tab->item_count - 1);
 			app_ensure_selection_visible ();
-			app_invalidate ();
+			xui_invalidate ();
 		}
 		return true;
 
@@ -2847,7 +2682,7 @@ app_process_action (enum action action)
 static bool
 app_editor_process_action (enum action action)
 {
-	app_invalidate ();
+	xui_invalidate ();
 	switch (action)
 	{
 	case ACTION_ABORT:
@@ -2907,7 +2742,7 @@ app_process_left_mouse_click (struct widget *w, int x, int y, int modifiers)
 	switch (w->id)
 	{
 	case WIDGET_BUTTON:
-		app_process_action (w->subid);
+		app_process_action (w->userdata);
 		break;
 	case WIDGET_GAUGE:
 	{
@@ -2926,7 +2761,7 @@ app_process_left_mouse_click (struct widget *w, int x, int y, int modifiers)
 		struct tab *tab = g.help_tab;
 		int i = 0;
 		LIST_FOR_EACH (struct tab, iter, g.tabs)
-			if (++i == w->subid)
+			if (++i == w->userdata)
 				tab = iter;
 
 		app_switch_tab (tab);
@@ -2935,7 +2770,7 @@ app_process_left_mouse_click (struct widget *w, int x, int y, int modifiers)
 	case WIDGET_LIST:
 	{
 		struct tab *tab = g.active_tab;
-		int row_index = y / g.ui_vunit;
+		int row_index = y / g_xui.vunit;
 		if (row_index < 0
 		 || row_index >= (int) tab->item_count - tab->item_top)
 			return false;
@@ -2949,7 +2784,7 @@ app_process_left_mouse_click (struct widget *w, int x, int y, int modifiers)
 
 		tab->item_selected = row_index + tab->item_top;
 		app_ensure_selection_visible ();
-		app_invalidate ();
+		xui_invalidate ();
 
 		if (modifiers & APP_KEYMOD_DOUBLE_CLICK)
 			app_process_action (ACTION_CHOOSE);
@@ -2961,7 +2796,7 @@ app_process_left_mouse_click (struct widget *w, int x, int y, int modifiers)
 		int visible_items = app_visible_items ();
 		tab->item_top = (double) y / w->height
 			* (int) tab->item_count - visible_items / 2;
-		app_invalidate ();
+		xui_invalidate ();
 		app_fix_view_range ();
 		break;
 	}
@@ -2999,11 +2834,11 @@ app_process_mouse (termo_mouse_event_t type, int x, int y, int button,
 	if (g.editor.line)
 	{
 		line_editor_abort (&g.editor, false);
-		app_invalidate ();
+		xui_invalidate ();
 	}
 
 	struct widget *target = NULL;
-	LIST_FOR_EACH (struct widget, w, g.widgets)
+	LIST_FOR_EACH (struct widget, w, g_xui.widgets)
 		if (x >= w->x && x < w->x + w->width
 		 && y >= w->y && y < w->y + w->height)
 			target = w;
@@ -3149,7 +2984,7 @@ static int
 app_binding_cmp (const void *a, const void *b)
 {
 	const struct binding *aa = a, *bb = b;
-	int cmp = termo_keycmp (g.tk, &aa->decoded, &bb->decoded);
+	int cmp = termo_keycmp (g_xui.tk, &aa->decoded, &bb->decoded);
 	return cmp ? cmp : bb->order - aa->order;
 }
 
@@ -3160,7 +2995,7 @@ app_next_binding (struct str_map_iter *iter, termo_key_t *key, int *action)
 	while ((v = str_map_iter_next (iter)))
 	{
 		*action = ACTION_NONE;
-		if (*termo_strpkey_utf8 (g.tk,
+		if (*termo_strpkey_utf8 (g_xui.tk,
 			iter->link->key, key, TERMO_FORMAT_ALTISMETA))
 			print_error ("%s: invalid binding", iter->link->key);
 		else if (v->type == CONFIG_ITEM_NULL)
@@ -3189,7 +3024,7 @@ app_init_bindings (const char *keymap,
 	termo_key_t decoded;
 	for (size_t i = 0; i < defaults_len; i++)
 	{
-		hard_assert (!*termo_strpkey_utf8 (g.tk,
+		hard_assert (!*termo_strpkey_utf8 (g_xui.tk,
 			defaults[i].key, &decoded, TERMO_FORMAT_ALTISMETA));
 		a[a_len++] = (struct binding) { decoded, defaults[i].action, order++ };
 	}
@@ -3211,7 +3046,8 @@ app_init_bindings (const char *keymap,
 	for (size_t in = 0; in < a_len; in++)
 	{
 		a[in].order = 0;
-		if (!out || termo_keycmp (g.tk, &a[in].decoded, &a[out - 1].decoded))
+		if (!out
+		 || termo_keycmp (g_xui.tk, &a[in].decoded, &a[out - 1].decoded))
 			a[out++] = a[in];
 	}
 
@@ -3223,14 +3059,15 @@ static char *
 app_strfkey (const termo_key_t *key)
 {
 	// For display purposes, this is highly desirable
-	int flags = termo_get_flags (g.tk);
-	termo_set_flags (g.tk, flags | TERMO_FLAG_SPACESYMBOL);
+	int flags = termo_get_flags (g_xui.tk);
+	termo_set_flags (g_xui.tk, flags | TERMO_FLAG_SPACESYMBOL);
 	termo_key_t fixed = *key;
-	termo_canonicalise (g.tk, &fixed);
-	termo_set_flags (g.tk, flags);
+	termo_canonicalise (g_xui.tk, &fixed);
+	termo_set_flags (g_xui.tk, flags);
 
 	char buf[16] = "";
-	termo_strfkey_utf8 (g.tk, buf, sizeof buf, &fixed, TERMO_FORMAT_ALTISMETA);
+	termo_strfkey_utf8 (g_xui.tk,
+		buf, sizeof buf, &fixed, TERMO_FORMAT_ALTISMETA);
 	return xstrdup (buf);
 }
 
@@ -3244,8 +3081,7 @@ app_process_termo_event (termo_key_t *event)
 	bool handled = false;
 	if ((handled = event->type == TERMO_TYPE_FOCUS))
 	{
-		g.ui_focused = !!event->code.focused;
-		app_invalidate ();
+		xui_invalidate ();
 		// Senseless fall-through
 	}
 
@@ -3264,7 +3100,7 @@ app_process_termo_event (termo_key_t *event)
 			return handled;
 
 		line_editor_insert (&g.editor, event->code.codepoint);
-		app_invalidate ();
+		xui_invalidate ();
 		return true;
 	}
 	if ((binding = bsearch (&dummy, g_normal_keys, g_normal_keys_len,
@@ -3433,7 +3269,7 @@ current_tab_update (void)
 	g_current_tab.item_count = g.playlist.len;
 	g_current_tab.item_mark =
 		MIN ((int) g.playlist.len - 1, g_current_tab.item_mark);
-	app_invalidate ();
+	xui_invalidate ();
 }
 
 static struct tab *
@@ -3695,7 +3531,7 @@ library_tab_load_data (const struct strv *data)
 	if (g_library_tab.super.item_selected >= (int) len)
 		app_move_selection (0);
 
-	app_invalidate ();
+	xui_invalidate ();
 }
 
 static void
@@ -3858,7 +3694,7 @@ library_tab_on_action (enum action action)
 		library_tab_load_data (&empty);
 		strv_free (&empty);
 
-		app_invalidate ();
+		xui_invalidate ();
 		return true;
 	}
 	case ACTION_MPD_ADD:
@@ -4402,7 +4238,7 @@ info_tab_on_item_layout (size_t item_index)
 	{
 		char *prefix = xstrdup_printf ("%s:", item->prefix);
 		app_push (&l, g.ui->label (A_BOLD, prefix))
-			->width = 8 * g.ui_hunit;
+			->width = 8 * g_xui.hunit;
 		app_push (&l, g.ui->padding (0, 0.5, 1));
 	}
 
@@ -4533,7 +4369,7 @@ info_tab_on_plugin_stdout (const struct pollfd *fd, void *user_data)
 	case SOCKET_IO_EOF:
 		info_tab_plugin_abort ();
 		info_tab_update ();
-		app_invalidate ();
+		xui_invalidate ();
 	}
 }
 
@@ -4624,7 +4460,7 @@ info_tab_on_action (enum action action)
 	case ACTION_CHOOSE:
 		info_tab_plugin_run (item->plugin, item_list_get (&g.playlist, g.song));
 		info_tab_update ();
-		app_invalidate ();
+		xui_invalidate ();
 		return true;
 	default:
 		return false;
@@ -4838,7 +4674,7 @@ debug_tab_push (char *message, chtype attrs)
 	item->attrs = attrs;
 	item->timestamp = clock_msec (CLOCK_REALTIME);
 
-	app_invalidate ();
+	xui_invalidate ();
 }
 
 static struct tab *
@@ -4866,7 +4702,7 @@ spectrum_redraw (void)
 	if (spectrum)
 		spectrum->on_render (spectrum);
 
-	poller_idle_set (&g.flip_event);
+	poller_idle_set (&g_xui.flip_event);
 }
 
 // When any problem occurs with the FIFO, we'll just give up on it completely
@@ -4880,7 +4716,7 @@ spectrum_discard_fifo (void)
 		g.spectrum_fd = -1;
 
 		spectrum_free (&g.spectrum);
-		app_invalidate ();
+		xui_invalidate ();
 	}
 }
 
@@ -4952,7 +4788,7 @@ spectrum_setup_fifo (void)
 
 	if (!path)
 		print_error ("spectrum: %s", "FIFO path could not be resolved");
-	else if (!g.locale_is_utf8)
+	else if (!g_xui.locale_is_utf8)
 		print_error ("spectrum: %s", "UTF-8 locale required");
 	else if (!spectrum_init (&g.spectrum, (char *) spectrum_format,
 		spectrum_bars->value.integer, spectrum_fps->value.integer, &e))
@@ -5025,10 +4861,10 @@ mpd_on_outputs_response (const struct mpd_response *response,
 	else
 	{
 		pulse_init (&g.pulse, &g.poller);
-		g.pulse.on_update = app_invalidate;
+		g.pulse.on_update = xui_invalidate;
 	}
 
-	app_invalidate ();
+	xui_invalidate ();
 }
 
 static void
@@ -5048,7 +4884,7 @@ static void
 pulse_disable (void)
 {
 	pulse_free (&g.pulse);
-	app_invalidate ();
+	xui_invalidate ();
 }
 
 #else  // ! WITH_PULSE
@@ -5157,7 +4993,7 @@ mpd_update_playback_state (void)
 	if (g.playlist_version != last_playlist_version)
 		mpd_update_playlist_time ();
 
-	app_invalidate ();
+	xui_invalidate ();
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -5295,7 +5131,7 @@ mpd_on_elapsed_time_tick (void *user_data)
 	// Try to get called on the next round second of playback
 	poller_timer_set (&g.elapsed_event, 1000 - elapsed_msec);
 
-	app_invalidate ();
+	xui_invalidate ();
 }
 
 static void
@@ -5505,72 +5341,17 @@ app_on_reconnect (void *user_data)
 		mpd_queue_reconnect ();
 	}
 	free (address);
-	app_invalidate ();
+	xui_invalidate ();
 }
 
 // --- TUI ---------------------------------------------------------------------
 
-static void
-tui_flush_buffer (struct widget *self, struct row_buffer *buf)
-{
-	move (self->y, self->x);
-
-	int space = MIN (self->width, g.ui_width - self->x);
-	row_buffer_align (buf, space, self->attrs);
-	row_buffer_flush (buf);
-	row_buffer_free (buf);
-}
-
-static void
-tui_render_padding (struct widget *self)
-{
-	struct row_buffer buf = row_buffer_make ();
-	tui_flush_buffer (self, &buf);
-}
-
-static struct widget *
-tui_make_padding (chtype attrs, float width, float height)
-{
-	struct widget *w = xcalloc (1, sizeof *w + 2);
-	w->text[0] = ' ';
-	w->on_render = tui_render_padding;
-	w->attrs = attrs;
-	w->width = width * 2;
-	w->height = height;
-	return w;
-}
-
-static void
-tui_render_label (struct widget *self)
-{
-	struct row_buffer buf = row_buffer_make ();
-	row_buffer_append (&buf, self->text, self->attrs);
-	tui_flush_buffer (self, &buf);
-}
-
-static struct widget *
-tui_make_label (chtype attrs, const char *label)
-{
-	size_t len = strlen (label);
-	struct widget *w = xcalloc (1, sizeof *w + len + 1);
-	w->on_render = tui_render_label;
-	w->attrs = attrs;
-	memcpy (w->text, label, len);
-
-	struct row_buffer buf = row_buffer_make ();
-	row_buffer_append (&buf, w->text, w->attrs);
-	w->width = buf.total_width;
-	w->height = 1;
-	row_buffer_free (&buf);
-	return w;
-}
-
 static struct widget *
 tui_make_button (chtype attrs, const char *label, enum action a)
 {
-	struct widget *w = tui_make_label (attrs, label);
+	struct widget *w = tui_make_label (attrs, 0, label);
 	w->id = WIDGET_BUTTON;
-	w->subid = a;
+	w->userdata = a;
 	return w;
 }
 
@@ -5710,20 +5491,12 @@ tui_make_scrollbar (chtype attrs)
 	return w;
 }
 
-static void
-tui_render_list (struct widget *self)
-{
-	LIST_FOR_EACH (struct widget, w, self->children)
-		w->on_render (w);
-}
-
 static struct widget *
 tui_make_list (void)
 {
 	struct widget *w = xcalloc (1, sizeof *w + 1);
 	w->width = -1;
 	w->height = g.active_tab->item_count;
-	w->on_render = tui_render_list;
 	return w;
 }
 
@@ -5731,10 +5504,37 @@ static void
 tui_render_editor (struct widget *self)
 {
 	struct row_buffer buf = row_buffer_make ();
-	int caret = line_editor_write (&g.editor, &buf, self->width, self->attrs);
+	const struct line_editor *e = &g.editor;
+	int width = self->width;
+	if (e->prompt)
+	{
+		hard_assert (e->prompt < 127);
+		row_buffer_append_c (&buf, e->prompt, self->attrs);
+		width--;
+	}
+
+	int following = 0;
+	for (size_t i = e->point; i < e->len; i++)
+		following += e->w[i];
+
+	int preceding = 0;
+	size_t start = e->point;
+	while (start && preceding < width / 2)
+		preceding += e->w[--start];
+
+	// There can be one extra space at the end of the line but this way we
+	// don't need to care about non-spacing marks following full-width chars
+	while (start && width - preceding - following > 2 /* widest char */)
+		preceding += e->w[--start];
+
+	// XXX: we should also show < > indicators for overflow but it'd probably
+	//   considerably complicate this algorithm
+	for (; start < e->len; start++)
+		row_buffer_append_c (&buf, e->line[start], self->attrs);
 	tui_flush_buffer (self, &buf);
 
 	// FIXME: This should be at the end of of tui_render().
+	int caret = !!e->prompt + preceding;
 	move (self->y, self->x + caret);
 	curs_set (1);
 }
@@ -5751,491 +5551,21 @@ tui_make_editor (chtype attrs)
 	return w;
 }
 
-static void
-tui_render (void)
-{
-	erase ();
-	curs_set (0);
-
-	LIST_FOR_EACH (struct widget, w, g.widgets)
-		if (w->width >= 0 && w->height >= 0)
-			w->on_render (w);
-}
-
-static void
-tui_flip (void)
-{
-	// Curses handles double-buffering for us automatically.
-	refresh ();
-}
-
-static void
-tui_winch (void)
-{
-	// The standard endwin/refresh sequence makes the terminal flicker
-#if defined HAVE_RESIZETERM && defined TIOCGWINSZ
-	struct winsize size;
-	if (!ioctl (STDOUT_FILENO, TIOCGWINSZ, (char *) &size))
-	{
-		char *row = getenv ("LINES");
-		char *col = getenv ("COLUMNS");
-		unsigned long tmp;
-		resizeterm (
-			(row && xstrtoul (&tmp, row, 10)) ? tmp : size.ws_row,
-			(col && xstrtoul (&tmp, col, 10)) ? tmp : size.ws_col);
-	}
-#else  // HAVE_RESIZETERM && TIOCGWINSZ
-	endwin ();
-	refresh ();
-#endif  // HAVE_RESIZETERM && TIOCGWINSZ
-
-	g.ui_width = COLS;
-	g.ui_height = LINES;
-	app_invalidate ();
-}
-
-static void
-tui_destroy (void)
-{
-	endwin ();
-}
-
-static struct ui tui_ui =
+static struct app_ui app_tui_ui =
 {
 	.padding     = tui_make_padding,
-	.label       = tui_make_label,
+	.label       = app_make_label,
 	.button      = tui_make_button,
 	.gauge       = tui_make_gauge,
 	.spectrum    = tui_make_spectrum,
 	.scrollbar   = tui_make_scrollbar,
 	.list        = tui_make_list,
 	.editor      = tui_make_editor,
-
-	.render      = tui_render,
-	.flip        = tui_flip,
-	.winch       = tui_winch,
-	.destroy     = tui_destroy,
 };
-
-// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-
-static void
-tui_on_tty_event (termo_key_t *event, int64_t event_ts)
-{
-	// Simple double click detection via release--press delay, only a bit
-	// complicated by the fact that we don't know what's being released
-	static termo_key_t last_event;
-	static int64_t last_event_ts;
-	static int last_button;
-
-	int y, x, button, y_last, x_last, modifiers = 0;
-	termo_mouse_event_t type, type_last;
-	if (termo_interpret_mouse (g.tk, event, &type, &button, &y, &x))
-	{
-		if (termo_interpret_mouse
-			(g.tk, &last_event, &type_last, NULL, &y_last, &x_last)
-		 && event_ts - last_event_ts < 500
-		 && type_last == TERMO_MOUSE_RELEASE && type == TERMO_MOUSE_PRESS
-		 && y_last == y && x_last == x && last_button == button)
-		{
-			modifiers |= APP_KEYMOD_DOUBLE_CLICK;
-			// Prevent interpreting triple clicks as two double clicks.
-			last_button = 0;
-		}
-		else if (type == TERMO_MOUSE_PRESS)
-			last_button = button;
-
-		if (!app_process_mouse (type, x, y, button, modifiers))
-			beep ();
-	}
-	else if (!app_process_termo_event (event))
-		beep ();
-
-	last_event = *event;
-	last_event_ts = event_ts;
-}
-
-static void
-tui_on_tty_readable (const struct pollfd *fd, void *user_data)
-{
-	(void) user_data;
-	if (fd->revents & ~(POLLIN | POLLHUP | POLLERR))
-		print_debug ("fd %d: unexpected revents: %d", fd->fd, fd->revents);
-
-	poller_timer_reset (&g.tk_timer);
-	termo_advisereadable (g.tk);
-
-	termo_key_t event = {};
-	int64_t event_ts = clock_msec (CLOCK_BEST);
-	termo_result_t res;
-	while ((res = termo_getkey (g.tk, &event)) == TERMO_RES_KEY)
-		tui_on_tty_event (&event, event_ts);
-
-	if (res == TERMO_RES_AGAIN)
-		poller_timer_set (&g.tk_timer, termo_get_waittime (g.tk));
-	else if (res == TERMO_RES_ERROR || res == TERMO_RES_EOF)
-		app_quit ();
-}
-
-static void
-tui_on_key_timer (void *user_data)
-{
-	(void) user_data;
-
-	termo_key_t event;
-	if (termo_getkey_force (g.tk, &event) == TERMO_RES_KEY)
-		if (!app_process_termo_event (&event))
-			beep ();
-}
-
-static void
-tui_init (void)
-{
-	poller_fd_set (&g.tty_event, POLLIN);
-	if (!termo_start (g.tk) || !initscr () || nonl () == ERR)
-		exit_fatal ("failed to set up the terminal");
-
-	termo_set_mouse_tracking_mode (g.tk, TERMO_MOUSE_TRACKING_DRAG);
-
-	g.ui = &tui_ui;
-	g.ui_width = COLS;
-	g.ui_height = LINES;
-	g.ui_vunit = 1;
-	g.ui_hunit = 1;
-
-	// By default we don't use any colors so they're not required...
-	if (start_color () == ERR
-	 || use_default_colors () == ERR
-	 || COLOR_PAIRS <= ATTRIBUTE_COUNT)
-		return;
-
-	for (int a = 0; a < ATTRIBUTE_COUNT; a++)
-	{
-		// ...thus we can reset back to defaults even after initializing some
-		// FIXME: that's a lie now, MULTISELECT requires a colour
-		if (g.attrs[a].fg >= COLORS || g.attrs[a].fg < -1
-		 || g.attrs[a].bg >= COLORS || g.attrs[a].bg < -1)
-		{
-			app_init_attributes ();
-			return;
-		}
-
-		init_pair (a + 1, g.attrs[a].fg, g.attrs[a].bg);
-		g.attrs[a].attrs |= COLOR_PAIR (a + 1);
-	}
-}
 
 // --- X11 ---------------------------------------------------------------------
 
 #ifdef WITH_X11
-
-static XRenderColor x11_default_fg = { .alpha = 0xffff };
-static XRenderColor x11_default_bg = { 0xffff, 0xffff, 0xffff, 0xffff };
-static XErrorHandler x11_default_error_handler;
-
-static struct x11_font_link *
-x11_font_link_new (XftFont *font)
-{
-	struct x11_font_link *self = xcalloc (1, sizeof *self);
-	self->font = font;
-	return self;
-}
-
-static void
-x11_font_link_destroy (struct x11_font_link *self)
-{
-	XftFontClose (g.dpy, self->font);
-	free (self);
-}
-
-static struct x11_font_link *
-x11_font_link_open (FcPattern *pattern)
-{
-	XftFont *font = XftFontOpenPattern (g.dpy, pattern);
-	if (!font)
-	{
-		FcPatternDestroy (pattern);
-		return NULL;
-	}
-	return x11_font_link_new (font);
-}
-
-static bool
-x11_font_open (struct x11_font *self, FcPattern *pattern)
-{
-	FcPattern *substituted = FcPatternDuplicate (pattern);
-	FcConfigSubstitute (NULL, substituted, FcMatchPattern);
-
-	FcResult result = 0;
-	FcPattern *match
-		= XftFontMatch (g.dpy, DefaultScreen (g.dpy), substituted, &result);
-	FcPatternDestroy (substituted);
-	if (!match || !(self->list = x11_font_link_open (match)))
-	{
-		FcPatternDestroy (pattern);
-		return false;
-	}
-
-	self->pattern = pattern;
-	self->unavailable = FcCharSetCreate ();
-	return true;
-}
-
-static void
-x11_font_free (struct x11_font *self)
-{
-	FcPatternDestroy (self->pattern);
-	FcCharSetDestroy (self->unavailable);
-	LIST_FOR_EACH (struct x11_font_link, iter, self->list)
-		x11_font_link_destroy (iter);
-}
-
-/// Find or instantiate a font that can render the character given by cp.
-static XftFont *
-x11_font_cover_codepoint (struct x11_font *self, ucs4_t cp)
-{
-	if (FcCharSetHasChar (self->unavailable, cp))
-		return self->list->font;
-
-	struct x11_font_link **used = &self->list;
-	for (; *used; used = &(*used)->next)
-		if (XftCharExists (g.dpy, (*used)->font, cp))
-			return (*used)->font;
-
-	FcCharSet *set = FcCharSetCreate ();
-	FcCharSetAddChar (set, cp);
-	FcPattern *needle = FcPatternDuplicate (self->pattern);
-	FcPatternAddCharSet (needle, FC_CHARSET, set);
-	FcConfigSubstitute (NULL, needle, FcMatchPattern);
-
-	FcResult result = 0;
-	FcPattern *match
-		= XftFontMatch (g.dpy, DefaultScreen (g.dpy), needle, &result);
-	FcCharSetDestroy (set);
-	FcPatternDestroy (needle);
-	if (!match)
-		goto fail;
-
-	struct x11_font_link *new = x11_font_link_open (match);
-	if (!new)
-		goto fail;
-
-	// The reverse may happen simply due to race conditions.
-	if (XftCharExists (g.dpy, new->font, cp))
-		return (*used = new)->font;
-
-	x11_font_link_destroy (new);
-fail:
-	FcCharSetAddChar (self->unavailable, cp);
-	return self->list->font;
-}
-
-// TODO: Perhaps produce an array of FT_UInt glyph indexes, mainly so that
-//   x11_font_{hadvance,draw,render}() can use the same data, through the use
-//   of a new function that collects the spans in a data structure.
-static size_t
-x11_font_span (struct x11_font *self, const uint8_t *text, XftFont **font)
-{
-	hard_assert (self->list != NULL);
-
-	// Xft similarly just stops on invalid UTF-8.
-	ucs4_t cp = 0;
-	const uint8_t *p = text;
-	if (!(p = u8_next (&cp, p)))
-		return 0;
-
-	*font = x11_font_cover_codepoint (self, cp);
-	for (const uint8_t *end = NULL; (end = u8_next (&cp, p)); p = end)
-	{
-		if (x11_font_cover_codepoint (self, cp) != *font)
-			break;
-	}
-	return p - text;
-}
-
-static int
-x11_font_draw (struct x11_font *self, XftColor *color, int x, int y,
-	const char *text)
-{
-	int advance = 0;
-	size_t len = 0;
-	XftFont *font = NULL;
-	while ((len = x11_font_span (self, (const uint8_t *) text, &font)))
-	{
-		if (color)
-		{
-			XftDrawStringUtf8 (g.xft_draw, color, font,
-				x + advance, y + self->list->font->ascent,
-				(const FcChar8 *) text, len);
-		}
-
-		XGlyphInfo extents = {};
-		XftTextExtentsUtf8 (g.dpy, font, (const FcChar8 *) text, len, &extents);
-		text += len;
-		advance += extents.xOff;
-	}
-	return advance;
-}
-
-static int
-x11_font_hadvance (struct x11_font *self, const char *text)
-{
-	return x11_font_draw (self, NULL, 0, 0, text);
-}
-
-static int
-x11_font_render (struct x11_font *self, int op, Picture src, int srcx, int srcy,
-	int x, int y, const char *text)
-{
-	int advance = 0;
-	size_t len = 0;
-	XftFont *font = NULL;
-	while ((len = x11_font_span (self, (const uint8_t *) text, &font)))
-	{
-		if (src)
-		{
-			XftTextRenderUtf8 (g.dpy, op, src, font, g.x11_pixmap_picture,
-				srcx, srcy, x + advance, y + self->list->font->ascent,
-				(const FcChar8 *) text, len);
-		}
-
-		XGlyphInfo extents = {};
-		XftTextExtentsUtf8 (g.dpy, font, (const FcChar8 *) text, len, &extents);
-		text += len;
-		advance += extents.xOff;
-	}
-	return advance;
-}
-
-// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-
-static struct x11_font *
-x11_widget_font (struct widget *self)
-{
-	if (self->attrs & A_BOLD)
-		return &g.xft_bold;
-	if (self->attrs & A_ITALIC)
-		return &g.xft_italic;
-	return &g.xft_regular;
-}
-
-static XRenderColor *
-x11_fg_attrs (chtype attrs)
-{
-	int pair = PAIR_NUMBER (attrs);
-	if (!pair--)
-		return &x11_default_fg;
-	return (attrs & A_REVERSE) ? &g.x_bg[pair] : &g.x_fg[pair];
-}
-
-static XRenderColor *
-x11_fg (struct widget *self)
-{
-	return x11_fg_attrs (self->attrs);
-}
-
-static XRenderColor *
-x11_bg_attrs (chtype attrs)
-{
-	int pair = PAIR_NUMBER (attrs);
-	if (!pair--)
-		return &x11_default_bg;
-	return (attrs & A_REVERSE) ? &g.x_fg[pair] : &g.x_bg[pair];
-}
-
-static XRenderColor *
-x11_bg (struct widget *self)
-{
-	return x11_bg_attrs (self->attrs);
-}
-
-static void
-x11_render_padding (struct widget *self)
-{
-	if (PAIR_NUMBER (self->attrs))
-	{
-		XRenderFillRectangle (g.dpy, PictOpSrc, g.x11_pixmap_picture,
-			x11_bg (self), self->x, self->y, self->width, self->height);
-	}
-	if (self->attrs & A_UNDERLINE)
-	{
-		XRenderFillRectangle (g.dpy, PictOpSrc, g.x11_pixmap_picture,
-			x11_fg (self), self->x, self->y + self->height - 1, self->width, 1);
-	}
-}
-
-static struct widget *
-x11_make_padding (chtype attrs, float width, float height)
-{
-	struct widget *w = xcalloc (1, sizeof *w + 2);
-	w->text[0] = ' ';
-	w->on_render = x11_render_padding;
-	w->attrs = attrs;
-	w->width = g.ui_vunit * width;
-	w->height = g.ui_vunit * height;
-	return w;
-}
-
-static void
-x11_render_label (struct widget *self)
-{
-	x11_render_padding (self);
-
-	int space = MIN (self->width, g.ui_width - self->x);
-	if (space <= 0)
-		return;
-
-	// TODO: Try to avoid re-measuring on each render.
-	struct x11_font *font = x11_widget_font (self);
-	int advance = x11_font_hadvance (font, self->text);
-	if (advance <= space)
-	{
-		XftColor color = { .color = *x11_fg (self) };
-		x11_font_draw (font, &color, self->x, self->y, self->text);
-		return;
-	}
-
-	// XRender doesn't extend gradients beyond their end stops.
-	XRenderColor solid = *x11_fg (self), colors[3] = { solid, solid, solid };
-	colors[2].alpha = 0;
-
-	double portion = MIN (1, 2.0 * font->list->font->height / space);
-	XFixed stops[3] = { 0, XDoubleToFixed (1 - portion), XDoubleToFixed (1) };
-	XLinearGradient gradient = { {}, { XDoubleToFixed (space), 0 } };
-
-	// Note that this masking is a very expensive operation.
-	Picture source =
-		XRenderCreateLinearGradient (g.dpy, &gradient, stops, colors, 3);
-	x11_font_render (font, PictOpOver, source, -self->x, 0, self->x, self->y,
-		self->text);
-	XRenderFreePicture (g.dpy, source);
-}
-
-static struct widget *
-x11_make_label (chtype attrs, const char *label)
-{
-	// Xft renders combining marks by themselves, NFC improves it a bit.
-	// We'd have to use HarfBuzz to do this correctly.
-	size_t label_len = strlen (label) + 1, normalized_len = 0;
-	uint8_t *normalized = u8_normalize (UNINORM_NFC,
-		(const uint8_t *) label, label_len, NULL, &normalized_len);
-	if (!normalized)
-	{
-		normalized = memcpy (xmalloc (label_len), label, label_len);
-		normalized_len = label_len;
-	}
-
-	struct widget *w = xcalloc (1, sizeof *w + normalized_len);
-	w->on_render = x11_render_label;
-	w->attrs = attrs;
-	memcpy (w->text, normalized, normalized_len);
-	free (normalized);
-
-	struct x11_font *font = x11_widget_font (w);
-	w->width = x11_font_hadvance (font, w->text);
-	w->height = font->list->font->height;
-	return w;
-}
 
 // On a 20x20 raster to make it feasible to design on paper.
 #define X11_STOP {INFINITY, INFINITY}
@@ -6321,7 +5651,7 @@ x11_render_button (struct widget *self)
 {
 	x11_render_padding (self);
 
-	const XPointDouble *icon = x11_icon_for_action (self->subid);
+	const XPointDouble *icon = x11_icon_for_action (self->userdata);
 	if (!icon)
 	{
 		x11_render_label (self);
@@ -6342,9 +5672,9 @@ x11_render_button (struct widget *self)
 		color.blue /= 2;
 	}
 
-	Picture source = XRenderCreateSolidFill (g.dpy, &color);
+	Picture source = XRenderCreateSolidFill (g_xui.dpy, &color);
 	const XRenderPictFormat *format
-		= XRenderFindStandardFormat (g.dpy, PictStandardA8);
+		= XRenderFindStandardFormat (g_xui.dpy, PictStandardA8);
 
 	int x = self->x, y = self->y + (self->height - self->width) / 2;
 	XPointDouble buffer[total], *p = buffer;
@@ -6357,27 +5687,27 @@ x11_render_button (struct widget *self)
 		}
 		else if (p != buffer)
 		{
-			XRenderCompositeDoublePoly (g.dpy, PictOpOver,
-				source, g.x11_pixmap_picture, format,
+			XRenderCompositeDoublePoly (g_xui.dpy, PictOpOver,
+				source, g_xui.x11_pixmap_picture, format,
 				0, 0, 0, 0, buffer, p - buffer, EvenOddRule);
 			p = buffer;
 		}
-	XRenderFreePicture (g.dpy, source);
+	XRenderFreePicture (g_xui.dpy, source);
 }
 
 static struct widget *
 x11_make_button (chtype attrs, const char *label, enum action a)
 {
-	struct widget *w = x11_make_label (attrs, label);
+	struct widget *w = x11_make_label (attrs, 0, label);
 	w->id = WIDGET_BUTTON;
-	w->subid = a;
+	w->userdata = a;
 
 	if (x11_icon_for_action (a))
 	{
 		w->on_render = x11_render_button;
 
 		// It should be padded by the caller horizontally.
-		w->height = g.ui_vunit;
+		w->height = g_xui.vunit;
 		w->width = w->height * 3 / 4;
 	}
 	return w;
@@ -6391,13 +5721,13 @@ x11_render_gauge (struct widget *self)
 		return;
 
 	int part = (float) g.song_elapsed / g.song_duration * self->width;
-	XRenderFillRectangle (g.dpy, PictOpSrc, g.x11_pixmap_picture,
+	XRenderFillRectangle (g_xui.dpy, PictOpSrc, g_xui.x11_pixmap_picture,
 		x11_bg_attrs (APP_ATTR (ELAPSED)),
 		self->x,
 		self->y + self->height / 8,
 		part,
 		self->height * 3 / 4);
-	XRenderFillRectangle (g.dpy, PictOpSrc, g.x11_pixmap_picture,
+	XRenderFillRectangle (g_xui.dpy, PictOpSrc, g_xui.x11_pixmap_picture,
 		x11_bg_attrs (APP_ATTR (REMAINS)),
 		self->x + part,
 		self->y + self->height / 8,
@@ -6413,7 +5743,7 @@ x11_make_gauge (chtype attrs)
 	w->on_render = x11_render_gauge;
 	w->attrs = attrs;
 	w->width = -1;
-	w->height = g.ui_vunit;
+	w->height = g_xui.vunit;
 	return w;
 }
 
@@ -6437,13 +5767,13 @@ x11_render_spectrum (struct widget *self)
 		};
 	}
 
-	XRenderFillRectangles (g.dpy, PictOpSrc, g.x11_pixmap_picture,
+	XRenderFillRectangles (g_xui.dpy, PictOpSrc, g_xui.x11_pixmap_picture,
 		x11_fg (self), rectangles, N_ELEMENTS (rectangles));
 #endif  // WITH_FFTW
 
 	// Enable the spectrum_redraw() hack.
 	XRectangle r = { self->x, self->y, self->width, self->height };
-	XUnionRectWithRegion (&r, g.x11_clip, g.x11_clip);
+	XUnionRectWithRegion (&r, g_xui.x11_clip, g_xui.x11_clip);
 }
 
 static struct widget *
@@ -6452,8 +5782,8 @@ x11_make_spectrum (chtype attrs, int width)
 	struct widget *w = xcalloc (1, sizeof *w + 1);
 	w->on_render = x11_render_spectrum;
 	w->attrs = attrs;
-	w->width = width * g.ui_vunit / 2;
-	w->height = g.ui_vunit;
+	w->width = width * g_xui.vunit / 2;
+	w->height = g_xui.vunit;
 	return w;
 }
 
@@ -6464,9 +5794,9 @@ x11_render_scrollbar (struct widget *self)
 
 	struct tab *tab = g.active_tab;
 	struct scrollbar bar =
-		app_compute_scrollbar (tab, app_visible_items_height (), g.ui_vunit);
+		app_compute_scrollbar (tab, app_visible_items_height (), g_xui.vunit);
 
-	XRenderFillRectangle (g.dpy, PictOpSrc, g.x11_pixmap_picture,
+	XRenderFillRectangle (g_xui.dpy, PictOpSrc, g_xui.x11_pixmap_picture,
 		x11_fg_attrs (self->attrs),
 		self->x,
 		self->y + bar.start,
@@ -6480,30 +5810,15 @@ x11_make_scrollbar (chtype attrs)
 	struct widget *w = xcalloc (1, sizeof *w + 1);
 	w->on_render = x11_render_scrollbar;
 	w->attrs = attrs;
-	w->width = g.ui_vunit / 2;
+	w->width = g_xui.vunit / 2;
 	return w;
-}
-
-static void
-x11_render_list (struct widget *self)
-{
-	// We could do that for all widgets, but it would be kind-of pointless.
-	// We need to go through Xft, or XftTextRenderUtf8() might skip glyphs.
-	XftDrawSetClipRectangles (g.xft_draw, 0, 0,
-		&(XRectangle) { self->x, self->y, self->width, self->height }, 1);
-
-	x11_render_padding (self);
-	LIST_FOR_EACH (struct widget, w, self->children)
-		w->on_render (w);
-
-	XftDrawSetClip (g.xft_draw, None);
 }
 
 static struct widget *
 x11_make_list (void)
 {
 	struct widget *w = xcalloc (1, sizeof *w + 1);
-	w->on_render = x11_render_list;
+	w->on_render = x11_render_padding;
 	return w;
 }
 
@@ -6520,19 +5835,19 @@ x11_render_editor (struct widget *self)
 	XGlyphInfo extents = {};
 	if (g.editor.prompt)
 	{
-		FT_UInt i = XftCharIndex (g.dpy, font, g.editor.prompt);
-		XftDrawGlyphs (g.xft_draw, &color, font, x, y, &i, 1);
-		XftGlyphExtents (g.dpy, font, &i, 1, &extents);
-		x += extents.xOff + g.ui_vunit / 4;
+		FT_UInt i = XftCharIndex (g_xui.dpy, font, g.editor.prompt);
+		XftDrawGlyphs (g_xui.xft_draw, &color, font, x, y, &i, 1);
+		XftGlyphExtents (g_xui.dpy, font, &i, 1, &extents);
+		x += extents.xOff + g_xui.vunit / 4;
 	}
 
 	// TODO: Adapt x11_font_{hadvance,draw}().
 	// TODO: Make this scroll around the caret, and fade like labels.
-	XftDrawString32 (g.xft_draw, &color, font, x, y,
+	XftDrawString32 (g_xui.xft_draw, &color, font, x, y,
 		g.editor.line, g.editor.len);
 
-	XftTextExtents32 (g.dpy, font, g.editor.line, g.editor.point, &extents);
-	XRenderFillRectangle (g.dpy, PictOpSrc, g.x11_pixmap_picture,
+	XftTextExtents32 (g_xui.dpy, font, g.editor.line, g.editor.point, &extents);
+	XRenderFillRectangle (g_xui.dpy, PictOpSrc, g_xui.x11_pixmap_picture,
 		&color.color, x + extents.xOff, self->y, 2, self->height);
 }
 
@@ -6544,64 +5859,14 @@ x11_make_editor (chtype attrs)
 	w->on_render = x11_render_editor;
 	w->attrs = attrs;
 	w->width = -1;
-	w->height = g.ui_vunit;
+	w->height = g_xui.vunit;
 	return w;
 }
 
-static void
-x11_render (void)
-{
-	XRenderFillRectangle (g.dpy, PictOpSrc, g.x11_pixmap_picture,
-		&x11_default_bg, 0, 0, g.ui_width, g.ui_height);
-	LIST_FOR_EACH (struct widget, w, g.widgets)
-		if (w->width && w->height)
-			w->on_render (w);
-
-	XRectangle r = { 0, 0, g.ui_width, g.ui_height };
-	XUnionRectWithRegion (&r, g.x11_clip, g.x11_clip);
-	poller_idle_set (&g.xpending_event);
-}
-
-static void
-x11_flip (void)
-{
-	// This exercise in futility doesn't seem to affect CPU usage much.
-	XRectangle r = {};
-	XClipBox (g.x11_clip, &r);
-	XCopyArea (g.dpy, g.x11_pixmap, g.x11_window,
-		DefaultGC (g.dpy, DefaultScreen (g.dpy)),
-		r.x, r.y, r.width, r.height, r.x, r.y);
-
-	XSubtractRegion (g.x11_clip, g.x11_clip, g.x11_clip);
-	poller_idle_set (&g.xpending_event);
-}
-
-static void
-x11_destroy (void)
-{
-	XDestroyIC (g.x11_ic);
-	XCloseIM (g.x11_im);
-	XDestroyRegion (g.x11_clip);
-	XDestroyWindow (g.dpy, g.x11_window);
-	XRenderFreePicture (g.dpy, g.x11_pixmap_picture);
-	XFreePixmap (g.dpy, g.x11_pixmap);
-	XftDrawDestroy (g.xft_draw);
-	x11_font_free (&g.xft_regular);
-	x11_font_free (&g.xft_bold);
-	x11_font_free (&g.xft_italic);
-	cstr_set (&g.x11_selection, NULL);
-
-	poller_fd_reset (&g.x11_event);
-	XCloseDisplay (g.dpy);
-
-	// Xft hooks called in XCloseDisplay() don't clean up everything.
-	FcFini ();
-}
-
-static struct ui x11_ui =
+static struct app_ui app_x11_ui =
 {
 	.padding     = x11_make_padding,
-	.label       = x11_make_label,
+	.label       = app_make_label,
 	.button      = x11_make_button,
 	.gauge       = x11_make_gauge,
 	.spectrum    = x11_make_spectrum,
@@ -6609,603 +5874,8 @@ static struct ui x11_ui =
 	.list        = x11_make_list,
 	.editor      = x11_make_editor,
 
-	.render      = x11_render,
-	.flip        = x11_flip,
-	.destroy     = x11_destroy,
 	.have_icons  = true,
 };
-
-// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-
-static termo_sym_t
-x11_convert_keysym (KeySym keysym)
-{
-	// Leaving out TERMO_TYPE_FUNCTION, TERMO_SYM_DEL (N/A),
-	// and TERMO_SYM_SPACE (governed by TERMO_FLAG_SPACESYMBOL, not in use).
-	switch (keysym)
-	{
-	case XK_BackSpace:     return TERMO_SYM_BACKSPACE;
-	case XK_Tab:           return TERMO_SYM_TAB;
-	case XK_ISO_Left_Tab:  return TERMO_SYM_TAB;
-	case XK_Return:        return TERMO_SYM_ENTER;
-	case XK_Escape:        return TERMO_SYM_ESCAPE;
-
-	case XK_Up:            return TERMO_SYM_UP;
-	case XK_Down:          return TERMO_SYM_DOWN;
-	case XK_Left:          return TERMO_SYM_LEFT;
-	case XK_Right:         return TERMO_SYM_RIGHT;
-	case XK_Begin:         return TERMO_SYM_BEGIN;
-	case XK_Find:          return TERMO_SYM_FIND;
-	case XK_Insert:        return TERMO_SYM_INSERT;
-	case XK_Delete:        return TERMO_SYM_DELETE;
-	case XK_Select:        return TERMO_SYM_SELECT;
-	case XK_Page_Up:       return TERMO_SYM_PAGEUP;
-	case XK_Page_Down:     return TERMO_SYM_PAGEDOWN;
-	case XK_Home:          return TERMO_SYM_HOME;
-	case XK_End:           return TERMO_SYM_END;
-
-	case XK_Cancel:        return TERMO_SYM_CANCEL;
-	case XK_Clear:         return TERMO_SYM_CLEAR;
-	// TERMO_SYM_CLOSE
-	// TERMO_SYM_COMMAND
-	// TERMO_SYM_COPY
-	// TERMO_SYM_EXIT
-	case XK_Help:          return TERMO_SYM_HELP;
-	// TERMO_SYM_MARK
-	// TERMO_SYM_MESSAGE
-	// TERMO_SYM_MOVE
-	// TERMO_SYM_OPEN
-	// TERMO_SYM_OPTIONS
-	case XK_Print:         return TERMO_SYM_PRINT;
-	case XK_Redo:          return TERMO_SYM_REDO;
-	// TERMO_SYM_REFERENCE
-	// TERMO_SYM_REFRESH
-	// TERMO_SYM_REPLACE
-	// TERMO_SYM_RESTART
-	// TERMO_SYM_RESUME
-	// TERMO_SYM_SAVE
-	// TERMO_SYM_SUSPEND
-	case XK_Undo:          return TERMO_SYM_UNDO;
-
-	case XK_KP_0:          return TERMO_SYM_KP0;
-	case XK_KP_1:          return TERMO_SYM_KP1;
-	case XK_KP_2:          return TERMO_SYM_KP2;
-	case XK_KP_3:          return TERMO_SYM_KP3;
-	case XK_KP_4:          return TERMO_SYM_KP4;
-	case XK_KP_5:          return TERMO_SYM_KP5;
-	case XK_KP_6:          return TERMO_SYM_KP6;
-	case XK_KP_7:          return TERMO_SYM_KP7;
-	case XK_KP_8:          return TERMO_SYM_KP8;
-	case XK_KP_9:          return TERMO_SYM_KP9;
-	case XK_KP_Enter:      return TERMO_SYM_KPENTER;
-	case XK_KP_Add:        return TERMO_SYM_KPPLUS;
-	case XK_KP_Subtract:   return TERMO_SYM_KPMINUS;
-	case XK_KP_Multiply:   return TERMO_SYM_KPMULT;
-	case XK_KP_Divide:     return TERMO_SYM_KPDIV;
-	case XK_KP_Separator:  return TERMO_SYM_KPCOMMA;
-	case XK_KP_Decimal:    return TERMO_SYM_KPPERIOD;
-	case XK_KP_Equal:      return TERMO_SYM_KPEQUALS;
-	}
-	return TERMO_SYM_UNKNOWN;
-}
-
-static bool
-on_x11_keypress (XEvent *e)
-{
-	// A kibibyte long buffer will have to suffice for anyone.
-	XKeyEvent *ev = &e->xkey;
-	char buf[1 << 10] = {}, *p = buf;
-	KeySym keysym = None;
-	Status status = 0;
-	int len = Xutf8LookupString
-		(g.x11_ic, ev, buf, sizeof buf, &keysym, &status);
-	if (status == XBufferOverflow)
-		print_warning ("input method overflow");
-
-	termo_key_t key = {};
-	if (ev->state & ShiftMask)
-		key.modifiers |= TERMO_KEYMOD_SHIFT;
-	if (ev->state & ControlMask)
-		key.modifiers |= TERMO_KEYMOD_CTRL;
-	if (ev->state & Mod1Mask)
-		key.modifiers |= TERMO_KEYMOD_ALT;
-
-	if (keysym >= XK_F1 && keysym <= XK_F35)
-	{
-		key.type = TERMO_TYPE_FUNCTION;
-		key.code.number = 1 + keysym - XK_F1;
-		return app_process_termo_event (&key);
-	}
-	if ((key.code.sym = x11_convert_keysym (keysym)) != TERMO_SYM_UNKNOWN)
-	{
-		key.type = TERMO_TYPE_KEYSYM;
-		return app_process_termo_event (&key);
-	}
-
-	bool result = true;
-	if (len)
-	{
-		key.type = TERMO_TYPE_KEY;
-		key.modifiers &= ~TERMO_KEYMOD_SHIFT;
-
-		int32_t cp = 0;
-		struct utf8_iter iter = { .s = buf, .len = len };
-		size_t cp_len = 0;
-		while ((cp = utf8_iter_next (&iter, &cp_len)) >= 0)
-		{
-			termo_key_t k = key;
-			memcpy (k.multibyte, p, MIN (cp_len, sizeof k.multibyte - 1));
-			p += cp_len;
-
-			// This is all unfortunate, but probably in the right place.
-			if (!cp)
-			{
-				k.code.codepoint = ' ';
-				if (ev->state & ShiftMask)
-					k.modifiers |= TERMO_KEYMOD_SHIFT;
-			}
-			else if (cp >= 32)
-				k.code.codepoint = cp;
-			else if (ev->state & ShiftMask)
-				k.code.codepoint = cp + 64;
-			else
-				k.code.codepoint = cp + 96;
-			if (!app_process_termo_event (&k))
-				result = false;
-		}
-	}
-	return result;
-}
-
-static void
-x11_init_pixmap (void)
-{
-	int screen = DefaultScreen (g.dpy);
-	g.x11_pixmap = XCreatePixmap (g.dpy, g.x11_window,
-		g.ui_width, g.ui_height, DefaultDepth (g.dpy, screen));
-
-	Visual *visual = DefaultVisual (g.dpy, screen);
-	XRenderPictFormat *format = XRenderFindVisualFormat (g.dpy, visual);
-	g.x11_pixmap_picture
-		= XRenderCreatePicture (g.dpy, g.x11_pixmap, format, 0, NULL);
-}
-
-static char *
-x11_find_text (struct widget *list, int x, int y)
-{
-	struct widget *target = NULL;
-	LIST_FOR_EACH (struct widget, w, list)
-		if (x >= w->x && x < w->x + w->width
-		 && y >= w->y && y < w->y + w->height)
-			target = w;
-	if (!target)
-		return NULL;
-
-	char *result = x11_find_text (target->children, x, y);
-	if (result)
-		return result;
-	return xstrdup (target->text);
-}
-
-// TODO: OSC 52 exists for terminals, so make it possible to enable that there.
-static bool
-x11_process_press (int x, int y, int button, int modifiers)
-{
-	if (button != Button3)
-		goto out;
-
-	char *text = x11_find_text (g.widgets, x, y);
-	if (!text || !*(cstr_strip_in_place (text, " \t")))
-	{
-		free (text);
-		goto out;
-	}
-
-	cstr_set (&g.x11_selection, text);
-	XSetSelectionOwner (g.dpy, XInternAtom (g.dpy, "CLIPBOARD", False),
-		g.x11_window, CurrentTime);
-	app_show_message (xstrdup ("Text copied to clipboard: "),
-		xstrdup (g.x11_selection));
-	return true;
-
-out:
-	return app_process_mouse (TERMO_MOUSE_PRESS, x, y, button, modifiers);
-}
-
-static int
-x11_state_to_modifiers (unsigned int state)
-{
-	int modifiers = 0;
-	if (state & ShiftMask)    modifiers |= TERMO_KEYMOD_SHIFT;
-	if (state & ControlMask)  modifiers |= TERMO_KEYMOD_CTRL;
-	if (state & Mod1Mask)     modifiers |= TERMO_KEYMOD_ALT;
-	return modifiers;
-}
-
-static bool
-on_x11_input_event (XEvent *ev)
-{
-	static XEvent last_press_event;
-	if (ev->type == KeyPress)
-	{
-		last_press_event = (XEvent) {};
-		return on_x11_keypress (ev);
-	}
-	if (ev->type == MotionNotify)
-	{
-		return app_process_mouse (TERMO_MOUSE_DRAG,
-			ev->xmotion.x, ev->xmotion.y, 1 /* Button1MotionMask */,
-			x11_state_to_modifiers (ev->xmotion.state));
-	}
-
-	// This is nearly the same as tui_on_tty_event().
-	int x = ev->xbutton.x, y = ev->xbutton.y;
-	unsigned int button = ev->xbutton.button;
-	int modifiers = x11_state_to_modifiers (ev->xbutton.state);
-	if (ev->type == ButtonPress
-	 && ev->xbutton.time - last_press_event.xbutton.time < 500
-	 && abs (last_press_event.xbutton.x - x) < 5
-	 && abs (last_press_event.xbutton.y - y) < 5
-	 && last_press_event.xbutton.button == button)
-	{
-		modifiers |= APP_KEYMOD_DOUBLE_CLICK;
-		// Prevent interpreting triple clicks as two double clicks.
-		last_press_event = (XEvent) {};
-	}
-	else if (ev->type == ButtonPress)
-		last_press_event = *ev;
-
-	if (ev->type == ButtonPress)
-		return x11_process_press (x, y, button, modifiers);
-	if (ev->type == ButtonRelease)
-		return app_process_mouse
-			(TERMO_MOUSE_RELEASE, x, y, button, modifiers);
-	return false;
-}
-
-static void
-on_x11_selection_request (XSelectionRequestEvent *ev)
-{
-	Atom xa_targets = XInternAtom (g.dpy, "TARGETS", False);
-	Atom xa_compound_text = XInternAtom (g.dpy, "COMPOUND_TEXT", False);
-	Atom xa_utf8 = XInternAtom (g.dpy, "UTF8_STRING", False);
-	Atom targets[] = { xa_targets, XA_STRING, xa_compound_text, xa_utf8 };
-
-	XEvent response = {};
-	bool ok = false;
-	Atom property = ev->property ? ev->property : ev->target;
-	if (!g.x11_selection)
-		goto out;
-
-	XICCEncodingStyle style = 0;
-	if ((ok = ev->target == xa_targets))
-	{
-		XChangeProperty (g.dpy, ev->requestor, property,
-			XA_ATOM, 32, PropModeReplace,
-			(const unsigned char *) targets, N_ELEMENTS (targets));
-		goto out;
-	}
-	else if (ev->target == XA_STRING)
-		style = XStringStyle;
-	else if (ev->target == xa_compound_text)
-		style = XCompoundTextStyle;
-	else if (ev->target == xa_utf8)
-		style = XUTF8StringStyle;
-	else
-		goto out;
-
-	// XXX: We let it crash us with BadLength, but we may, e.g., use INCR.
-	XTextProperty text = {};
-	if ((ok = !Xutf8TextListToTextProperty
-		 (g.dpy, &g.x11_selection, 1, style, &text)))
-	{
-		XChangeProperty (g.dpy, ev->requestor, property,
-			text.encoding, text.format, PropModeReplace,
-			text.value, text.nitems);
-	}
-	XFree (text.value);
-
-out:
-	response.xselection.type = SelectionNotify;
-	// XXX: We should check it against the event causing XSetSelectionOwner().
-	response.xselection.time = ev->time;
-	response.xselection.requestor = ev->requestor;
-	response.xselection.selection = ev->selection;
-	response.xselection.target = ev->target;
-	response.xselection.property = ok ? property : None;
-	XSendEvent (g.dpy, ev->requestor, False, 0, &response);
-}
-
-static void
-on_x11_event (XEvent *ev)
-{
-	termo_key_t key = {};
-	switch (ev->type)
-	{
-	case Expose:
-	{
-		XRectangle r = { ev->xexpose.x, ev->xexpose.y,
-			ev->xexpose.width, ev->xexpose.height };
-		XUnionRectWithRegion (&r, g.x11_clip, g.x11_clip);
-		poller_idle_set (&g.flip_event);
-		break;
-	}
-	case ConfigureNotify:
-		if (g.ui_width == ev->xconfigure.width
-		 && g.ui_height == ev->xconfigure.height)
-			break;
-
-		g.ui_width = ev->xconfigure.width;
-		g.ui_height = ev->xconfigure.height;
-
-		XRenderFreePicture (g.dpy, g.x11_pixmap_picture);
-		XFreePixmap (g.dpy, g.x11_pixmap);
-		x11_init_pixmap ();
-		XftDrawChange (g.xft_draw, g.x11_pixmap);
-		app_invalidate ();
-		break;
-	case SelectionRequest:
-		on_x11_selection_request (&ev->xselectionrequest);
-		break;
-	case SelectionClear:
-		cstr_set (&g.x11_selection, NULL);
-		break;
-	// UnmapNotify can be received when restarting the window manager.
-	// Should this turn out to be unreliable (window not destroyed by WM
-	// upon closing), opt for the WM_DELETE_WINDOW protocol as well.
-	case DestroyNotify:
-		app_quit ();
-		break;
-	case FocusIn:
-		key.type = TERMO_TYPE_FOCUS;
-		key.code.focused = true;
-		app_process_termo_event (&key);
-		break;
-	case FocusOut:
-		key.type = TERMO_TYPE_FOCUS;
-		key.code.focused = false;
-		app_process_termo_event (&key);
-		break;
-	case KeyPress:
-	case ButtonPress:
-	case ButtonRelease:
-	case MotionNotify:
-		if (!on_x11_input_event (ev))
-			XkbBell (g.dpy, ev->xany.window, 0, None);
-	}
-}
-
-static void
-on_x11_pending (void *user_data)
-{
-	(void) user_data;
-
-	XkbEvent ev;
-	while (XPending (g.dpy))
-	{
-		if (XNextEvent (g.dpy, &ev.core))
-			exit_fatal ("XNextEvent returned non-zero");
-		if (XFilterEvent (&ev.core, None))
-			continue;
-
-		on_x11_event (&ev.core);
-	}
-
-	poller_idle_reset (&g.xpending_event);
-}
-
-static void
-on_x11_ready (const struct pollfd *pfd, void *user_data)
-{
-	(void) pfd;
-	on_x11_pending (user_data);
-}
-
-static int
-on_x11_error (Display *dpy, XErrorEvent *event)
-{
-	// Without opting for WM_DELETE_WINDOW, this window can become destroyed
-	// and hence invalid at any time.  We don't use the Window much,
-	// so we should be fine ignoring these errors.
-	if ((event->error_code == BadWindow && event->resourceid == g.x11_window)
-	 || (event->error_code == BadDrawable && event->resourceid == g.x11_window))
-		return app_quit (), 0;
-
-	// XXX: The simplest possible way of discarding selection management errors.
-	//   XCB would be a small win here, but it is a curse at the same time.
-	if (event->error_code == BadWindow && event->resourceid != g.x11_window)
-		return 0;
-
-	return x11_default_error_handler (dpy, event);
-}
-
-// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-
-static XRenderColor
-x11_convert_color (int color)
-{
-	hard_assert (color >= 0 && color <= 255);
-
-	static const uint16_t base[16] =
-	{
-		0x000, 0x800, 0x080, 0x880, 0x008, 0x808, 0x088, 0xccc,
-		0x888, 0xf00, 0x0f0, 0xff0, 0x00f, 0xf0f, 0x0ff, 0xfff,
-	};
-
-	XRenderColor c = { .alpha = 0xffff };
-	if (color < 16)
-	{
-		c.red   = 0x1111 *        (base[color] >> 8);
-		c.green = 0x1111 * (0xf & (base[color] >> 4));
-		c.blue  = 0x1111 * (0xf & (base[color]));
-	}
-	else if (color >= 232)
-		c.red = c.green = c.blue = 0x0101 * (8 + (color - 232) * 10);
-	else
-	{
-		color -= 16;
-
-		int r =  color / 36;
-		int g = (color / 6) % 6;
-		int b = (color % 6);
-		c.red   = 0x0101 * !!r * (55 + 40 * r);
-		c.green = 0x0101 * !!g * (55 + 40 * g);
-		c.blue  = 0x0101 * !!b * (55 + 40 * b);
-	}
-	return c;
-}
-
-static void
-x11_init_attributes (void)
-{
-	for (int a = 0; a < ATTRIBUTE_COUNT; a++)
-	{
-		g.x_fg[a] = x11_default_fg;
-		g.x_bg[a] = x11_default_bg;
-		if (g.attrs[a].fg >= 256 || g.attrs[a].fg < -1
-		 || g.attrs[a].bg >= 256 || g.attrs[a].bg < -1)
-			continue;
-
-		if (g.attrs[a].fg != -1)
-			g.x_fg[a] = x11_convert_color (g.attrs[a].fg);
-		if (g.attrs[a].bg != -1)
-			g.x_bg[a] = x11_convert_color (g.attrs[a].bg);
-
-		g.attrs[a].attrs |= COLOR_PAIR (a + 1);
-	}
-}
-
-static void
-x11_init_fonts (void)
-{
-	// TODO: Try to use Gtk/FontName from the _XSETTINGS_S%d selection,
-	//   as well as Net/DoubleClick*.  See the XSETTINGS proposal for details.
-	//   https://www.freedesktop.org/wiki/Specifications/XSettingsRegistry/
-	const char *name = get_config_string (g.config.root, "settings.x11_font");
-
-	if (!FcInit ())
-		print_warning ("FontConfig initialization failed");
-
-	FcPattern *query_regular = FcNameParse ((const FcChar8 *) name);
-	FcPattern *query_bold = FcPatternDuplicate (query_regular);
-	FcPatternAdd (query_bold, FC_STYLE, (FcValue) {
-		.type = FcTypeString, .u.s = (FcChar8 *) "Bold" }, FcFalse);
-	FcPattern *query_italic = FcPatternDuplicate (query_regular);
-	FcPatternAdd (query_italic, FC_STYLE, (FcValue) {
-		.type = FcTypeString, .u.s = (FcChar8 *) "Italic" }, FcFalse);
-
-	if (!x11_font_open (&g.xft_regular, query_regular))
-		exit_fatal ("cannot open font: %s", name);
-	if (!x11_font_open (&g.xft_bold, query_bold))
-		exit_fatal ("cannot open bold font: %s", name);
-	if (!x11_font_open (&g.xft_italic, query_italic))
-		exit_fatal ("cannot open italic font: %s", name);
-}
-
-static void
-x11_init (void)
-{
-	// https://tedyin.com/posts/a-brief-intro-to-linux-input-method-framework/
-	if (!XSupportsLocale ())
-		print_warning ("locale not supported by Xlib");
-	XSetLocaleModifiers ("");
-
-	if (!(g.dpy = XkbOpenDisplay
-		(NULL, &g.xkb_base_event_code, NULL, NULL, NULL, NULL)))
-		exit_fatal ("cannot open display");
-	if (!XftDefaultHasRender (g.dpy))
-		exit_fatal ("XRender is not supported");
-	if (!(g.x11_im = XOpenIM (g.dpy, NULL, NULL, NULL)))
-		exit_fatal ("failed to open an input method");
-
-	x11_default_error_handler = XSetErrorHandler (on_x11_error);
-
-	set_cloexec (ConnectionNumber (g.dpy));
-	g.x11_event = poller_fd_make (&g.poller, ConnectionNumber (g.dpy));
-	g.x11_event.dispatcher = on_x11_ready;
-	poller_fd_set (&g.x11_event, POLLIN);
-
-	// Whenever something causes Xlib to read its socket, it can make
-	// the I/O event above fail to trigger for whatever might have ended up
-	// in its queue.  So always use this instead of XSync:
-	g.xpending_event = poller_idle_make (&g.poller);
-	g.xpending_event.dispatcher = on_x11_pending;
-	poller_idle_set (&g.xpending_event);
-
-	x11_init_attributes ();
-	x11_init_fonts ();
-
-	int screen = DefaultScreen (g.dpy);
-	Colormap cmap = DefaultColormap (g.dpy, screen);
-	XColor default_bg =
-	{
-		.red    = x11_default_bg.red,
-		.green  = x11_default_bg.green,
-		.blue   = x11_default_bg.blue,
-	};
-	if (!XAllocColor (g.dpy, cmap, &default_bg))
-		exit_fatal ("X11 setup failed");
-
-	XSetWindowAttributes attrs =
-	{
-		.event_mask = StructureNotifyMask | ExposureMask | FocusChangeMask
-			| KeyPressMask | ButtonPressMask | ButtonReleaseMask
-			| Button1MotionMask,
-		.bit_gravity = NorthWestGravity,
-		.background_pixel = default_bg.pixel,
-	};
-
-	// Approximate the average width of a character to half of the em unit.
-	g.ui_vunit = g.xft_regular.list->font->height;
-	g.ui_hunit = g.ui_vunit / 2;
-	// Base the window's size on the regular font size.
-	// Roughly trying to match the 80x24 default dimensions of terminals.
-	g.ui_height = 24 * g.ui_vunit;
-	g.ui_width = g.ui_height * 4 / 3;
-
-	long im_event_mask = 0;
-	if (!XGetIMValues (g.x11_im, XNFilterEvents, &im_event_mask, NULL))
-		attrs.event_mask |= im_event_mask;
-
-	Visual *visual = DefaultVisual (g.dpy, screen);
-	g.x11_window = XCreateWindow (g.dpy, RootWindow (g.dpy, screen), 100, 100,
-		g.ui_width, g.ui_height, 0, CopyFromParent, InputOutput, visual,
-		CWEventMask | CWBackPixel | CWBitGravity, &attrs);
-	g.x11_clip = XCreateRegion ();
-
-	XTextProperty prop = {};
-	char *name = PROGRAM_NAME;
-	if (!Xutf8TextListToTextProperty (g.dpy, &name, 1, XUTF8StringStyle, &prop))
-		XSetWMName (g.dpy, g.x11_window, &prop);
-	XFree (prop.value);
-
-	// TODO: It is possible to do, e.g., on-the-spot.
-	XIMStyle im_style = XIMPreeditNothing | XIMStatusNothing;
-	XIMStyles *im_styles = NULL;
-	bool im_style_found = false;
-	if (!XGetIMValues (g.x11_im, XNQueryInputStyle, &im_styles, NULL)
-	 && im_styles)
-	{
-		for (unsigned i = 0; i < im_styles->count_styles; i++)
-			im_style_found |= im_styles->supported_styles[i] == im_style;
-		XFree (im_styles);
-	}
-	if (!im_style_found)
-		print_warning ("failed to find the desired input method style");
-	if (!(g.x11_ic = XCreateIC (g.x11_im,
-			XNInputStyle, im_style,
-			XNClientWindow, g.x11_window,
-			NULL)))
-		exit_fatal ("failed to open an input context");
-
-	XSetICFocus (g.x11_ic);
-
-	x11_init_pixmap ();
-	g.xft_draw = XftDrawCreate (g.dpy, g.x11_pixmap, visual, cmap);
-	g.ui = &x11_ui;
-
-	XMapWindow (g.dpy, g.x11_window);
-}
 
 #endif  // WITH_X11
 
@@ -7294,8 +5964,8 @@ app_on_signal_pipe_readable (const struct pollfd *fd, void *user_data)
 	if (g_winch_received)
 	{
 		g_winch_received = false;
-		if (g.ui->winch)
-			g.ui->winch ();
+		if (g_xui.ui->winch)
+			g_xui.ui->winch ();
 	}
 }
 
@@ -7329,7 +5999,7 @@ app_log_handler (void *user_data, const char *quote, const char *fmt,
 	app_show_message (xstrndup (message.str, quote_len),
 		xstrdup (message.str + quote_len));
 
-	if (g_verbose_mode && (g.ui != &tui_ui || !isatty (STDERR_FILENO)))
+	if (g_verbose_mode && (g_xui.ui != &tui_ui || !isatty (STDERR_FILENO)))
 		fprintf (stderr, "%s\n", message.str);
 	if (g_debug_tab.active)
 		debug_tab_push (str_steal (&message),
@@ -7349,12 +6019,6 @@ app_init_poller_events (void)
 	g.message_timer = poller_timer_make (&g.poller);
 	g.message_timer.dispatcher = app_on_message_timer;
 
-	// Always initialized, but only activated with the TUI.
-	g.tty_event = poller_fd_make (&g.poller, STDIN_FILENO);
-	g.tty_event.dispatcher = tui_on_tty_readable;
-	g.tk_timer = poller_timer_make (&g.poller);
-	g.tk_timer.dispatcher = tui_on_key_timer;
-
 	g.connect_event = poller_timer_make (&g.poller);
 	g.connect_event.dispatcher = app_on_reconnect;
 	poller_timer_set (&g.connect_event, 0);
@@ -7363,12 +6027,34 @@ app_init_poller_events (void)
 	g.elapsed_event.dispatcher = g.elapsed_poll
 		? mpd_on_elapsed_time_tick_poll
 		: mpd_on_elapsed_time_tick;
+}
 
-	g.refresh_event = poller_idle_make (&g.poller);
-	g.refresh_event.dispatcher = app_on_refresh;
+static void
+app_init_ui (bool requested_x11)
+{
+	xui_preinit ();
 
-	g.flip_event = poller_idle_make (&g.poller);
-	g.flip_event.dispatcher = app_on_flip;
+	g_normal_keys = app_init_bindings ("normal",
+		g_normal_defaults, N_ELEMENTS (g_normal_defaults), &g_normal_keys_len);
+	g_editor_keys = app_init_bindings ("editor",
+		g_editor_defaults, N_ELEMENTS (g_editor_defaults), &g_editor_keys_len);
+
+	// It doesn't work 100% (e.g. incompatible with undelining in urxvt)
+	// TODO: make this configurable
+	g.use_partial_boxes = g_xui.locale_is_utf8;
+
+#ifdef WITH_X11
+	g_xui.x11_fontname = get_config_string (g.config.root, "settings.x11_font");
+#endif  // WITH_X11
+
+	xui_start (&g.poller, requested_x11, g.attrs, N_ELEMENTS (g.attrs));
+
+#ifdef WITH_X11
+	if (g_xui.ui == &x11_ui)
+		g.ui = &app_x11_ui;
+	else
+#endif  // WITH_X11
+		g.ui = &app_tui_ui;
 }
 
 static void
@@ -7450,18 +6136,7 @@ main (int argc, char *argv[])
 	app_load_configuration ();
 	signals_setup_handlers ();
 	app_init_poller_events ();
-
-#ifdef WITH_X11
-	if (requested_x11 || (!isatty (STDIN_FILENO) && getenv ("DISPLAY")))
-		x11_init ();
-	else
-#endif  // WITH_X11
-		tui_init ();
-
-	g_normal_keys = app_init_bindings ("normal",
-		g_normal_defaults, N_ELEMENTS (g_normal_defaults), &g_normal_keys_len);
-	g_editor_keys = app_init_bindings ("editor",
-		g_editor_defaults, N_ELEMENTS (g_editor_defaults), &g_editor_keys_len);
+	app_init_ui (requested_x11);
 
 	if (g_debug_mode)
 		app_prepend_tab (debug_tab_init ());
@@ -7485,7 +6160,7 @@ main (int argc, char *argv[])
 	while (g.polling)
 		poller_run (&g.poller);
 
-	g.ui->destroy ();
+	xui_stop ();
 	g_log_message_real = log_message_stdio;
 	app_free_context ();
 	return 0;
