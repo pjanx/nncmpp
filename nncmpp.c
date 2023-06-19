@@ -1172,46 +1172,6 @@ struct app_ui
 	bool have_icons;
 };
 
-/// Replaces negative widths amongst widgets in the sublist by redistributing
-/// any width remaining after all positive claims are satisfied from "width".
-/// Also unifies heights to the maximum value of the run, and returns it.
-/// Then the widths are taken as final, and used to initialize X coordinates.
-static int
-widget_redistribute (struct widget *head, int width)
-{
-	int parts = 0, max_height = 0;
-	LIST_FOR_EACH (struct widget, w, head)
-	{
-		max_height = MAX (max_height, w->height);
-		if (w->width < 0)
-			parts -= w->width;
-		else
-			width -= w->width;
-	}
-
-	int remaining = MAX (width, 0), part_width = parts ? remaining / parts : 0;
-	struct widget *last = NULL;
-	LIST_FOR_EACH (struct widget, w, head)
-	{
-		w->height = max_height;
-		if (w->width < 0)
-		{
-			remaining -= (w->width *= -part_width);
-			last = w;
-		}
-	}
-	if (last)
-		last->width += remaining;
-
-	int x = 0;
-	LIST_FOR_EACH (struct widget, w, head)
-	{
-		widget_move (w, x - w->x, 0);
-		x += w->width;
-	}
-	return max_height;
-}
-
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 struct tab;
@@ -1666,11 +1626,46 @@ app_append_layout (struct layout *l, struct layout *dest)
 	*l = (struct layout) {};
 }
 
+/// Replaces negative widths amongst widgets in the layout by redistributing
+/// any width remaining after all positive claims are satisfied from "width".
+/// Also unifies heights to the maximum value of the run.
+/// Then the widths are taken as final, and used to initialize X coordinates.
 static void
 app_flush_layout_full (struct layout *l, int width, struct layout *dest)
 {
 	hard_assert (l != NULL && l->head != NULL);
-	widget_redistribute (l->head, width);
+
+	int parts = 0, max_height = 0;
+	LIST_FOR_EACH (struct widget, w, l->head)
+	{
+		max_height = MAX (max_height, w->height);
+		if (w->width < 0)
+			parts -= w->width;
+		else
+			width -= w->width;
+	}
+
+	int remaining = MAX (width, 0), part_width = parts ? remaining / parts : 0;
+	struct widget *last = NULL;
+	LIST_FOR_EACH (struct widget, w, l->head)
+	{
+		w->height = max_height;
+		if (w->width < 0)
+		{
+			remaining -= (w->width *= -part_width);
+			last = w;
+		}
+	}
+	if (last)
+		last->width += remaining;
+
+	int x = 0;
+	LIST_FOR_EACH (struct widget, w, l->head)
+	{
+		widget_move (w, x - w->x, 0);
+		x += w->width;
+	}
+
 	app_append_layout (l, dest);
 }
 
