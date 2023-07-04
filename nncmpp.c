@@ -4194,7 +4194,11 @@ info_tab_format_decode_toggle (char c)
 	case '\x01':
 		return A_BOLD;
 	case '\x02':
+#ifdef A_ITALIC
 		return A_ITALIC;
+#else
+		return A_UNDERLINE;
+#endif
 	default:
 		return 0;
 	}
