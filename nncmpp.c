@@ -2619,12 +2619,12 @@ app_process_action (enum action action)
 	case ACTION_MPD_CONSUME:            return app_mpd_toggle ("consume");
 	case ACTION_MPD_UPDATE_DB:          return MPD_SIMPLE ("update");
 
-	case ACTION_MPD_VOLUME_UP:          return app_setvol (g.volume + 10);
-	case ACTION_MPD_VOLUME_DOWN:        return app_setvol (g.volume - 10);
+	case ACTION_MPD_VOLUME_UP:          return app_setvol (g.volume + 5);
+	case ACTION_MPD_VOLUME_DOWN:        return app_setvol (g.volume - 5);
 
 #ifdef WITH_PULSE
-	case ACTION_PULSE_VOLUME_UP:        return pulse_volume_set (&g.pulse, +10);
-	case ACTION_PULSE_VOLUME_DOWN:      return pulse_volume_set (&g.pulse, -10);
+	case ACTION_PULSE_VOLUME_UP:        return pulse_volume_set (&g.pulse, +5);
+	case ACTION_PULSE_VOLUME_DOWN:      return pulse_volume_set (&g.pulse, -5);
 	case ACTION_PULSE_MUTE:             return pulse_volume_mute (&g.pulse);
 #endif  // WITH_PULSE
 

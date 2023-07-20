@@ -19,6 +19,8 @@ Unreleased
 
  * Changed volume adjustment bindings to use +/- keys
 
+ * Changed volume adjustment to go in steps of 5 rather than 10 %
+
 
 2.0.0 (2022-09-03)
 
