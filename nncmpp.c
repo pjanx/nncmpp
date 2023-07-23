@@ -1616,7 +1616,7 @@ app_append_layout (struct layout *l, struct layout *dest)
 	{
 		// Assuming there is no unclaimed vertical space.
 		LIST_FOR_EACH (struct widget, w, l->head)
-			widget_move (w, 0, last->y + last->height - w->y);
+			widget_move (w, 0, last->y + last->height);
 
 		last->next = l->head;
 		l->head->prev = last;
@@ -1914,19 +1914,21 @@ app_layout_tabs (struct layout *out)
 }
 
 static void
+app_layout_padding (chtype attrs, struct layout *out)
+{
+	struct layout l = {};
+	app_push_fill (&l, g.ui->padding (attrs, 0, 0.125));
+	app_flush_layout (&l, out);
+}
+
+static void
 app_layout_header (struct layout *out)
 {
 	if (g.client.state == MPD_CONNECTED)
 	{
-		struct layout lt = {};
-		app_push_fill (&lt, g.ui->padding (APP_ATTR (NORMAL), 0, 0.125));
-		app_flush_layout (&lt, out);
-
+		app_layout_padding (APP_ATTR (NORMAL), out);
 		app_layout_status (out);
-
-		struct layout lb = {};
-		app_push_fill (&lb, g.ui->padding (APP_ATTR (NORMAL), 0, 0.125));
-		app_flush_layout (&lb, out);
+		app_layout_padding (APP_ATTR (NORMAL), out);
 	}
 
 	app_layout_tabs (out);
@@ -2136,8 +2138,10 @@ app_layout_mpd_status (struct layout *out)
 static void
 app_layout_statusbar (struct layout *out)
 {
-	struct layout l = {};
 	chtype attrs[2] = { APP_ATTR (NORMAL), APP_ATTR (HIGHLIGHT) };
+	app_layout_padding (attrs[0], out);
+
+	struct layout l = {};
 	if (g.message)
 	{
 		app_push (&l, g.ui->padding (attrs[0], 0.25, 1));
@@ -2167,6 +2171,8 @@ app_layout_statusbar (struct layout *out)
 		app_layout_text ("Connecting to MPD...", attrs[0], out);
 	else if (g.client.state == MPD_DISCONNECTED)
 		app_layout_text ("Disconnected", attrs[0], out);
+
+	app_layout_padding (attrs[0], out);
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
