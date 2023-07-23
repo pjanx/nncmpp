@@ -1148,8 +1148,8 @@ pulse_volume_status (struct pulse *self, struct str *s)
 // Widget identification, mostly for mouse events.
 enum
 {
-	WIDGET_NONE = 0, WIDGET_BUTTON, WIDGET_GAUGE, WIDGET_TAB, WIDGET_SPECTRUM,
-	WIDGET_LIST, WIDGET_SCROLLBAR, WIDGET_MESSAGE,
+	WIDGET_NONE = 0, WIDGET_BUTTON, WIDGET_GAUGE, WIDGET_VOLUME,
+	WIDGET_TAB, WIDGET_SPECTRUM, WIDGET_LIST, WIDGET_SCROLLBAR, WIDGET_MESSAGE,
 };
 
 struct layout
@@ -1866,7 +1866,8 @@ app_layout_status (struct layout *out)
 	if (volume.len)
 	{
 		app_push (&l, g.ui->padding (attrs[0], 1, 1));
-		app_push (&l, g.ui->label (attrs[0], volume.str));
+		app_push (&l, g.ui->label (attrs[0], volume.str))
+			->id = WIDGET_VOLUME;
 	}
 	str_free (&volume);
 
@@ -2854,12 +2855,28 @@ app_process_mouse (termo_mouse_event_t type, int x, int y, int button,
 		g.ui_dragging = target->id;
 		return app_process_left_mouse_click (target, x, y, modifiers);
 	case 4:
-		if (target->id == WIDGET_LIST)
+		switch (target->id)
+		{
+		case WIDGET_LIST:
 			return app_process_action (ACTION_SCROLL_UP);
+		case WIDGET_VOLUME:
+			return app_process_action (g.pulse_control_requested
+				? ACTION_PULSE_VOLUME_UP : ACTION_MPD_VOLUME_UP);
+		case WIDGET_GAUGE:
+			return app_process_action (ACTION_MPD_FORWARD);
+		}
 		break;
 	case 5:
-		if (target->id == WIDGET_LIST)
+		switch (target->id)
+		{
+		case WIDGET_LIST:
 			return app_process_action (ACTION_SCROLL_DOWN);
+		case WIDGET_VOLUME:
+			return app_process_action (g.pulse_control_requested
+				? ACTION_PULSE_VOLUME_DOWN : ACTION_MPD_VOLUME_DOWN);
+		case WIDGET_GAUGE:
+			return app_process_action (ACTION_MPD_BACKWARD);
+		}
 		break;
 	}
 	return false;
