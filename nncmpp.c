@@ -2860,8 +2860,11 @@ app_process_mouse (termo_mouse_event_t type, int x, int y, int button,
 		case WIDGET_LIST:
 			return app_process_action (ACTION_SCROLL_UP);
 		case WIDGET_VOLUME:
-			return app_process_action (g.pulse_control_requested
-				? ACTION_PULSE_VOLUME_UP : ACTION_MPD_VOLUME_UP);
+			return app_process_action (
+#ifdef WITH_PULSE
+				g.pulse_control_requested ? ACTION_PULSE_VOLUME_UP :
+#endif  // WITH_PULSE
+				ACTION_MPD_VOLUME_UP);
 		case WIDGET_GAUGE:
 			return app_process_action (ACTION_MPD_FORWARD);
 		}
@@ -2872,8 +2875,11 @@ app_process_mouse (termo_mouse_event_t type, int x, int y, int button,
 		case WIDGET_LIST:
 			return app_process_action (ACTION_SCROLL_DOWN);
 		case WIDGET_VOLUME:
-			return app_process_action (g.pulse_control_requested
-				? ACTION_PULSE_VOLUME_DOWN : ACTION_MPD_VOLUME_DOWN);
+			return app_process_action (
+#ifdef WITH_PULSE
+				g.pulse_control_requested ? ACTION_PULSE_VOLUME_DOWN :
+#endif  // WITH_PULSE
+				ACTION_MPD_VOLUME_DOWN);
 		case WIDGET_GAUGE:
 			return app_process_action (ACTION_MPD_BACKWARD);
 		}
