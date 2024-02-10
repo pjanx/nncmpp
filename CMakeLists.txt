@@ -68,7 +68,7 @@ if (WITH_PULSE)
 	list (APPEND extra_libraries ${libpulse_LIBRARIES})
 endif ()
 
-pkg_check_modules (x11 x11 xrender xft fontconfig)
+pkg_check_modules (x11 x11 xrender xft fontconfig libpng)
 add_option (WITH_X11 "Build with X11 support" "${x11_FOUND}")
 if (WITH_X11)
 	if (NOT x11_FOUND)
