@@ -3843,8 +3843,13 @@ streams_tab_parse_playlist (const char *playlist, const char *content_type,
 	 || (content_type && is_content_type (content_type, "audio", "x-scpls")))
 		extract_re = "^File[^=]*=(.+)";
 	else if ((lines.len && !strcasecmp_ascii (lines.vector[0], "#EXTM3U"))
+	 || (content_type && is_content_type (content_type, "audio", "mpegurl"))
 	 || (content_type && is_content_type (content_type, "audio", "x-mpegurl")))
-		extract_re = "^([^#].*)";
+		// This could be "^([^#].*)", however 1. we would need to resolve
+		// relative URIs, and 2. relative URIs probably mean a Media Playlist,
+		// which must be passed to MPD.  The better thing to do here would be to
+		// reject anything with EXT-X-TARGETDURATION, and to resolve the URIs.
+		extract_re = "^(https?://.+)";
 
 	regex_t *re = regex_compile (extract_re, REG_EXTENDED, NULL);
 	hard_assert (re != NULL);
@@ -3867,7 +3872,7 @@ streams_tab_extract_links (struct str *data, const char *content_type,
 	}
 
 	streams_tab_parse_playlist (data->str, content_type, out);
-	return true;
+	return out->len != 0;
 }
 
 static void
