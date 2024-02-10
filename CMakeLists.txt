@@ -1,5 +1,5 @@
 cmake_minimum_required (VERSION 3.0...3.27)
-project (nncmpp VERSION 2.0.0 LANGUAGES C)
+project (nncmpp VERSION 2.1.0 LANGUAGES C)
 
 # Moar warnings
 if ("${CMAKE_C_COMPILER_ID}" MATCHES "GNU" OR CMAKE_COMPILER_IS_GNUCC)
