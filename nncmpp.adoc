@@ -69,7 +69,7 @@ colors = {
   scrollbar   = ""
 }
 streams = {
-  "dnbradio.com" = "http://www.dnbradio.com/hi.m3u"
+  "dnbradio.com" = "https://dnbradio.com/hi.pls"
   "BassDrive.com" = "http://bassdrive.com/v2/streams/BassDrive.pls"
 }
 ....
