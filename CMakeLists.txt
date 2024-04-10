@@ -121,7 +121,8 @@ add_custom_command (OUTPUT ${actions}
 # Build the main executable and link it
 add_executable (${PROJECT_NAME} ${PROJECT_NAME}.c ${actions})
 target_link_libraries (${PROJECT_NAME} ${Unistring_LIBRARIES}
-	${Ncursesw_LIBRARIES} termo-static ${curl_LIBRARIES} ${extra_libraries})
+	${Ncursesw_LIBRARIES} ${Termo_LIBRARIES} ${curl_LIBRARIES}
+	${extra_libraries})
 add_threads (${PROJECT_NAME})
 
 # Installation
