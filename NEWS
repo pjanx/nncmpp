@@ -1,3 +1,8 @@
+Unreleased
+
+ * Made global search indicate the search terms
+
+
 2.1.1 (2024-02-27)
 
  * Fixed installation of Info tab plugins

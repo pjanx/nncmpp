@@ -1,7 +1,7 @@
 /*
  * nncmpp -- the MPD client you never knew you needed
  *
- * Copyright (c) 2016 - 2023, Přemysl Eric Janouch <p@janouch.name>
+ * Copyright (c) 2016 - 2024, Přemysl Eric Janouch <p@janouch.name>
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted.
@@ -3599,17 +3599,21 @@ static void
 library_tab_on_search_data (const struct mpd_response *response,
 	const struct strv *data, void *user_data)
 {
-	(void) user_data;
+	char *filter = user_data;
 	if (!g_library_tab.searching)
-		return;
+		goto out;
 
 	if (!response->success)
-	{
 		print_error ("cannot search: %s", response->message_text);
-		return;
+	else
+	{
+		cstr_set (&g_library_tab.super.header,
+			xstrdup_printf ("%s: %s", "Global search", filter));
+		library_tab_load_data (data);
 	}
 
-	library_tab_load_data (data);
+out:
+	free (filter);
 }
 
 static void
@@ -3620,9 +3624,8 @@ search_on_changed (void)
 	size_t len;
 	char *u8 = (char *) u32_to_u8 (g.editor.line, g.editor.len + 1, NULL, &len);
 	mpd_client_send_command (c, "search", "any", u8, NULL);
-	free (u8);
 
-	mpd_client_add_task (c, library_tab_on_search_data, NULL);
+	mpd_client_add_task (c, library_tab_on_search_data, u8);
 	mpd_client_idle (c, 0);
 }
 
