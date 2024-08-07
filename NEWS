@@ -1,6 +1,6 @@
 Unreleased
 
- * Made global search indicate the search terms
+ * Made global search indicate the search terms, and match on filenames
 
 
 2.1.1 (2024-02-27)

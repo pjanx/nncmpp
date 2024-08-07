@@ -3616,6 +3616,21 @@ out:
 	free (filter);
 }
 
+static char *
+mpd_quoted_filter_string (const char *value)
+{
+	struct str quoted = str_make ();
+	str_append_c (&quoted, '\'');
+	for (const char *p = value; *p; p++)
+	{
+		if (mpd_client_must_escape_in_quote (*p))
+			str_append_c (&quoted, '\\');
+		str_append_c (&quoted, *p);
+	}
+	str_append_c (&quoted, '\'');
+	return str_steal (&quoted);
+}
+
 static void
 search_on_changed (void)
 {
@@ -3623,8 +3638,25 @@ search_on_changed (void)
 
 	size_t len;
 	char *u8 = (char *) u32_to_u8 (g.editor.line, g.editor.len + 1, NULL, &len);
+	mpd_client_list_begin (c);
 	mpd_client_send_command (c, "search", "any", u8, NULL);
 
+	// Just tag search doesn't consider filenames.
+	// Older MPD can do `search any X file X` but without the negation,
+	// which is necessary to avoid duplicates.  Neither syntax supports OR.
+	// XXX: We should parse this, but it's probably not going to reach 100 soon,
+	//   and it is not really documented what this should even look like.
+	if (strcmp (c->got_hello, "0.21.") > 1)
+	{
+		char *quoted = mpd_quoted_filter_string (u8);
+		char *expression = xstrdup_printf ("((!(any contains %s)) AND "
+			"(file contains %s))", quoted, quoted);
+		mpd_client_send_command (c, "search", expression, NULL);
+		free (expression);
+		free (quoted);
+	}
+
+	mpd_client_list_end (c);
 	mpd_client_add_task (c, library_tab_on_search_data, u8);
 	mpd_client_idle (c, 0);
 }
