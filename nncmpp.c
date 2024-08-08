@@ -522,7 +522,7 @@ static struct item_list
 item_list_make (void)
 {
 	struct item_list self = {};
-	self.items = xcalloc (sizeof *self.items, (self.alloc = 16));
+	self.items = xcalloc ((self.alloc = 16), sizeof *self.items);
 	return self;
 }
 
@@ -814,9 +814,9 @@ spectrum_init (struct spectrum *s, char *format, int bars, int fps,
 	s->useful_bins = s->bins / 2;
 
 	int used_bins = necessary_bins / 2;
-	s->rendered = xcalloc (sizeof *s->rendered, s->bars * 3 + 1);
-	s->spectrum = xcalloc (sizeof *s->spectrum, s->bars);
-	s->top_bins = xcalloc (sizeof *s->top_bins, s->bars);
+	s->rendered = xcalloc (s->bars * 3 + 1, sizeof *s->rendered);
+	s->spectrum = xcalloc (s->bars, sizeof *s->spectrum);
+	s->top_bins = xcalloc (s->bars, sizeof *s->top_bins);
 	for (int bar = 0; bar < s->bars; bar++)
 	{
 		int top_bin = floor (pow (used_bins + 1, (bar + 1.) / s->bars)) - 1;
@@ -839,7 +839,7 @@ spectrum_init (struct spectrum *s, char *format, int bars, int fps,
 	s->buffer = xcalloc (1, s->buffer_size);
 
 	// Prepare the window
-	s->window = xcalloc (sizeof *s->window, s->bins);
+	s->window = xcalloc (s->bins, sizeof *s->window);
 	window_hann (s->window, s->bins);
 
 	// Multiply by 2 for only using half of the DFT's result, then adjust to
@@ -849,11 +849,11 @@ spectrum_init (struct spectrum *s, char *format, int bars, int fps,
 	float coherent_gain = window_coherent_gain (s->window, s->bins);
 	s->accumulator_scale = 2 * 2 / coherent_gain / coherent_gain / s->samples;
 
-	s->data = xcalloc (sizeof *s->data, s->bins);
-	s->windowed = fftw_malloc (sizeof *s->windowed * s->bins);
-	s->out = fftw_malloc (sizeof *s->out * (s->useful_bins + 1));
+	s->data = xcalloc (s->bins, sizeof *s->data);
+	s->windowed = fftw_malloc (s->bins * sizeof *s->windowed);
+	s->out = fftw_malloc ((s->useful_bins + 1) * sizeof *s->out);
 	s->p = fftwf_plan_dft_r2c_1d (s->bins, s->windowed, s->out, FFTW_MEASURE);
-	s->accumulator = xcalloc (sizeof *s->accumulator, s->useful_bins);
+	s->accumulator = xcalloc (s->useful_bins, sizeof *s->accumulator);
 	return true;
 }
 
@@ -1337,7 +1337,7 @@ on_pulseaudio_changed (struct config_item *item)
 	g.pulse_control_requested = item->value.boolean;
 }
 
-static struct config_schema g_config_settings[] =
+static const struct config_schema g_config_settings[] =
 {
 	{ .name      = "address",
 	  .comment   = "Address to connect to the MPD server",
@@ -1401,7 +1401,7 @@ static struct config_schema g_config_settings[] =
 	{}
 };
 
-static struct config_schema g_config_colors[] =
+static const struct config_schema g_config_colors[] =
 {
 #define XX(name_, config, fg_, bg_, attrs_) \
 	{ .name = #config, .type = CONFIG_ITEM_STRING },
