@@ -5895,28 +5895,36 @@ x11_render_editor (struct widget *self)
 {
 	x11_render_padding (self);
 
-	XftFont *font = x11_widget_font (self)->list->font;
+	struct x11_font *font = x11_widget_font (self);
 	XftColor color = { .color = *x11_fg (self) };
 
-	// A simplistic adaptation of line_editor_write() follows.
-	int x = self->x, y = self->y + font->ascent;
-	XGlyphInfo extents = {};
-	if (g.editor.prompt)
+	// A simplistic adaptation of tui_render_editor() follows.
+	const struct line_editor *e = &g.editor;
+	int x = self->x;
+	if (e->prompt)
 	{
-		FT_UInt i = XftCharIndex (g_xui.dpy, font, g.editor.prompt);
-		XftDrawGlyphs (g_xui.xft_draw, &color, font, x, y, &i, 1);
-		XftGlyphExtents (g_xui.dpy, font, &i, 1, &extents);
-		x += extents.xOff + g_xui.vunit / 4;
+		hard_assert (e->prompt < 127);
+		x += x11_font_draw (font, &color, x, self->y,
+			(char[2]) { e->prompt, 0 }) + g_xui.vunit / 4;
 	}
 
-	// TODO: Adapt x11_font_{hadvance,draw}().
 	// TODO: Make this scroll around the caret, and fade like labels.
-	XftDrawString32 (g_xui.xft_draw, &color, font, x, y,
-		g.editor.line, g.editor.len);
+	size_t len;
+	ucs4_t *buf = xcalloc (e->len + 1, sizeof *buf);
+	*u32_pcpy (buf, e->line, e->point) = 0;
+	char *a = (char *) u32_to_u8 (buf, u32_strlen (buf) + 1, NULL, &len);
+	*u32_pcpy (buf, e->line + e->point, e->len - e->point) = 0;
+	char *b = (char *) u32_to_u8 (buf, u32_strlen (buf) + 1, NULL, &len);
+	free (buf);
 
-	XftTextExtents32 (g_xui.dpy, font, g.editor.line, g.editor.point, &extents);
+	x += x11_font_draw (font, &color, x, self->y, a);
+	int caret = x;
+	x += x11_font_draw (font, &color, x, self->y, b);
+	free (a);
+	free (b);
+
 	XRenderFillRectangle (g_xui.dpy, PictOpSrc, g_xui.x11_pixmap_picture,
-		&color.color, x + extents.xOff, self->y, 2, self->height);
+		&color.color, caret, self->y, 2, self->height);
 }
 
 static struct widget *

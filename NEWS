@@ -2,6 +2,8 @@ Unreleased
 
  * Made global search indicate the search terms, and match on filenames
 
+ * X11: added support for font fallbacks to the editor as well
+
 
 2.1.1 (2024-02-27)
 
