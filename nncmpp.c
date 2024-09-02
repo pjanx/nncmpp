@@ -5911,9 +5911,9 @@ x11_render_editor (struct widget *self)
 	// TODO: Make this scroll around the caret, and fade like labels.
 	size_t len;
 	ucs4_t *buf = xcalloc (e->len + 1, sizeof *buf);
-	*u32_pcpy (buf, e->line, e->point) = 0;
+	u32_cpy (buf, e->line, e->point);
 	char *a = (char *) u32_to_u8 (buf, u32_strlen (buf) + 1, NULL, &len);
-	*u32_pcpy (buf, e->line + e->point, e->len - e->point) = 0;
+	u32_cpy (buf, e->line + e->point, e->len - e->point + 1);
 	char *b = (char *) u32_to_u8 (buf, u32_strlen (buf) + 1, NULL, &len);
 	free (buf);
 
