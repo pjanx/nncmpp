@@ -1,6 +1,6 @@
 # nncmpp.actions.awk: produce C code for a list of user actions
 #
-# Copyright (c) 2022, Přemysl Eric Janouch <p@janouch.name>
+# Copyright (c) 2022 - 2024, Přemysl Eric Janouch <p@janouch.name>
 # SPDX-License-Identifier: 0BSD
 #
 # Usage: env LC_ALL=C A=0 B=1 awk -f nncmpp.actions.awk \
@@ -91,7 +91,7 @@ END {
 	print "enum action {"
 	for (i in Constants)
 		print "\t" "ACTION_" Constants[i] ","
-	print "\t" "ACTION_COUNT"
+	print "\t" "ACTION_USER_0"
 	print "};"
 	print ""
 	print "static const char *g_action_names[] = {"

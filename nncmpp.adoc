@@ -85,6 +85,18 @@ To adjust key bindings, put them within a *normal* or *editor* object.
 Run *nncmpp* with the *--debug* option to find out key combinations names.
 Press *?* in the help tab to learn the action identifiers to use.
 
+You may also define and bind your own actions, launching arbitrary
+shell commands.  Note that you cannot override internal actions in this manner.
+
+....
+actions = {
+  "pioneer-on-off" = {
+    description = "Pioneer amplifier: turn on/off"
+    command = "elksmart-comm --nec A538"
+  }
+}
+....
+
 Spectrum visualiser
 -------------------
 When built against the FFTW library, *nncmpp* can make use of MPD's "fifo"

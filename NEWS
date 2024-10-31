@@ -2,6 +2,9 @@ Unreleased
 
  * Made global search indicate the search terms, and match on filenames
 
+ * Added ability to configure bindable user-defined actions;
+   these can launch arbitrary shell commands
+
  * X11: added support for font fallbacks to the editor as well
 
 

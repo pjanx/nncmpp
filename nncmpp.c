@@ -1256,6 +1256,9 @@ static struct app_context
 	struct config config;               ///< Program configuration
 	struct strv streams;                ///< List of "name NUL URI NUL"
 	struct strv enqueue;                ///< Items to enqueue once connected
+	struct strv action_names;           ///< User-defined action names
+	struct strv action_descriptions;    ///< User-defined action descriptions
+	struct strv action_commands;        ///< User-defined action commands
 
 	struct tab *help_tab;               ///< Special help tab
 	struct tab *tabs;                   ///< All other tabs
@@ -1410,6 +1413,17 @@ static const struct config_schema g_config_colors[] =
 	{}
 };
 
+static const struct config_schema g_config_actions[] =
+{
+	{ .name      = "description",
+	  .comment   = "Human-readable description of the action",
+	  .type      = CONFIG_ITEM_STRING },
+	{ .name      = "command",
+	  .comment   = "Shell command to run",
+	  .type      = CONFIG_ITEM_STRING },
+	{}
+};
+
 static const char *
 get_config_string (struct config_item *root, const char *key)
 {
@@ -1485,12 +1499,43 @@ load_config_streams (struct config_item *subtree, void *user_data)
 }
 
 static void
+load_config_actions (struct config_item *subtree, void *user_data)
+{
+	(void) user_data;
+
+	struct str_map_iter iter = str_map_iter_make (&subtree->value.object);
+	while (str_map_iter_next (&iter))
+		strv_append (&g.action_names, iter.link->key);
+	qsort (g.action_names.vector, g.action_names.len,
+		sizeof *g.action_names.vector, strv_sort_utf8_cb);
+
+	for (size_t i = 0; i < g.action_names.len; i++)
+	{
+		const char *name = g.action_names.vector[i];
+		struct config_item *item = config_item_get (subtree, name, NULL);
+		hard_assert (item != NULL);
+		if (item->type != CONFIG_ITEM_OBJECT)
+			exit_fatal ("`%s': invalid user action, expected an object", name);
+
+		config_schema_apply_to_object (g_config_actions, item, NULL);
+		config_schema_call_changed (item);
+
+		const char *description = get_config_string (item, "description");
+		const char *command =  get_config_string (item, "command");
+		strv_append (&g.action_descriptions, description ? description : name);
+		strv_append (&g.action_commands, command ? command : "");
+	}
+}
+
+static void
 app_load_configuration (void)
 {
 	struct config *config = &g.config;
 	config_register_module (config, "settings", load_config_settings, NULL);
 	config_register_module (config, "colors",   load_config_colors,   NULL);
 	config_register_module (config, "streams",  load_config_streams,  NULL);
+	// This must run before bindings are parsed in app_init_ui().
+	config_register_module (config, "actions",  load_config_actions,  NULL);
 
 	// Bootstrap configuration, so that we can access schema items at all
 	config_load (config, config_item_object ());
@@ -1548,6 +1593,9 @@ app_init_context (void)
 	g.config = config_make ();
 	g.streams = strv_make ();
 	g.enqueue = strv_make ();
+	g.action_names = strv_make ();
+	g.action_descriptions = strv_make ();
+	g.action_commands = strv_make ();
 
 	g.playback_info = str_map_make (free);
 	g.playback_info.key_xfrm = tolower_ascii_strxfrm;
@@ -1570,6 +1618,9 @@ app_free_context (void)
 	str_map_free (&g.playback_info);
 	strv_free (&g.streams);
 	strv_free (&g.enqueue);
+	strv_free (&g.action_names);
+	strv_free (&g.action_descriptions);
+	strv_free (&g.action_commands);
 	item_list_free (&g.playlist);
 
 #ifdef WITH_FFTW
@@ -2379,10 +2430,50 @@ app_goto_tab (int tab_index)
 static int
 action_resolve (const char *name)
 {
-	for (int i = 0; i < ACTION_COUNT; i++)
+	for (int i = 0; i < ACTION_USER_0; i++)
 		if (!strcasecmp_ascii (g_action_names[i], name))
 			return i;
+
+	// We could put this lookup first, and accordingly adjust
+	// app_init_bindings() to do action_resolve(action_name(action)),
+	// however the ability to override internal actions seems pointless.
+	for (size_t i = 0; i < g.action_names.len; i++)
+		if (!strcasecmp_ascii (g.action_names.vector[i], name))
+			return ACTION_USER_0 + i;
 	return -1;
+}
+
+static const char *
+action_name (enum action action)
+{
+	if (action < ACTION_USER_0)
+		return g_action_names[action];
+
+	size_t user_action = action - ACTION_USER_0;
+	hard_assert (user_action < g.action_names.len);
+	return g.action_names.vector[user_action];
+}
+
+static const char *
+action_description (enum action action)
+{
+	if (action < ACTION_USER_0)
+		return g_action_descriptions[action];
+
+	size_t user_action = action - ACTION_USER_0;
+	hard_assert (user_action < g.action_descriptions.len);
+	return g.action_descriptions.vector[user_action];
+}
+
+static const char *
+action_command (enum action action)
+{
+	if (action < ACTION_USER_0)
+		return NULL;
+
+	size_t user_action = action - ACTION_USER_0;
+	hard_assert (user_action < g.action_commands.len);
+	return g.action_commands.vector[user_action];
 }
 
 // --- User input handling -----------------------------------------------------
@@ -2517,6 +2608,64 @@ incremental_search_on_end (bool confirmed)
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 static bool
+run_command (const char *command, struct str *output, struct error **e)
+{
+	char *adjusted = xstrdup_printf ("2>&1 %s", command);
+	print_debug ("running command: %s", adjusted);
+
+	FILE *fp = popen (adjusted, "r");
+	free (adjusted);
+	if (!fp)
+		return error_set (e, "%s", strerror (errno));
+
+	char buf[BUFSIZ];
+	size_t len;
+	while ((len = fread (buf, 1, sizeof buf, fp)) == sizeof buf)
+		str_append_data (output, buf, len);
+	str_append_data (output, buf, len);
+
+	int status = pclose (fp);
+	if (status < 0)
+		return error_set (e, "%s", strerror (errno));
+	if (WIFEXITED (status) && WEXITSTATUS (status))
+		return error_set (e, "exit status %d", WEXITSTATUS (status));
+	if (WIFSIGNALED (status))
+		return error_set (e, "terminated on signal %d", WTERMSIG (status));
+	if (WIFSTOPPED (status))
+		return error_set (e, "stopped on signal %d", WSTOPSIG (status));
+	return true;
+}
+
+static bool
+app_process_action_command (enum action action)
+{
+	const char *command = action_command (action);
+	if (!command)
+		return false;
+
+	struct str output = str_make ();
+	struct error *error = NULL;
+	(void) run_command (command, &output, &error);
+	str_enforce_utf8 (&output);
+
+	struct strv lines = strv_make ();
+	cstr_split (output.str, "\r\n", false, &lines);
+	str_free (&output);
+	while (lines.len && !*lines.vector[lines.len - 1])
+		free (strv_steal (&lines, lines.len - 1));
+	for (size_t i = 0; i < lines.len; i++)
+		print_debug ("output: %s", lines.vector[i]);
+	strv_free (&lines);
+
+	if (error)
+	{
+		print_error ("\"%s\": %s", action_description (action), error->message);
+		error_free (error);
+	}
+	return true;
+}
+
+static bool
 app_mpd_toggle (const char *name)
 {
 	const char *s = str_map_find (&g.playback_info, name);
@@ -2562,10 +2711,6 @@ app_process_action (enum action action)
 		xui_invalidate ();
 		app_hide_message ();
 		return true;
-	default:
-		print_error ("\"%s\" is not allowed here",
-			g_action_descriptions[action]);
-		return false;
 
 	case ACTION_MULTISELECT:
 		if (!tab->can_multiselect
@@ -2677,8 +2822,14 @@ app_process_action (enum action action)
 	case ACTION_GOTO_VIEW_BOTTOM:
 		g.active_tab->item_selected = g.active_tab->item_top;
 		return app_move_selection (MAX (0, app_visible_items () - 1));
+
+	default:
+		if (app_process_action_command (action))
+			return true;
+
+		print_error ("\"%s\" is not allowed here", action_description (action));
+		return false;
 	}
-	return false;
 }
 
 static bool
@@ -2696,8 +2847,7 @@ app_editor_process_action (enum action action)
 		g.editor.on_end = NULL;
 		return true;
 	default:
-		print_error ("\"%s\" is not allowed here",
-			g_action_descriptions[action]);
+		print_error ("\"%s\" is not allowed here", action_description (action));
 		return false;
 
 	case ACTION_EDITOR_B_CHAR:
@@ -4110,24 +4260,16 @@ info_tab_plugin_load (const char *path)
 	// Shell quoting is less annoying than process management.
 	struct str escaped = str_make ();
 	shell_quote (path, &escaped);
-	FILE *fp = popen (escaped.str, "r");
-	str_free (&escaped);
-	if (!fp)
-	{
-		print_error ("%s: %s", path, strerror (errno));
-		return NULL;
-	}
 
 	struct str description = str_make ();
-	char buf[BUFSIZ];
-	size_t len;
-	while ((len = fread (buf, 1, sizeof buf, fp)) == sizeof buf)
-		str_append_data (&description, buf, len);
-	str_append_data (&description, buf, len);
-	if (pclose (fp))
+	struct error *error = NULL;
+	(void) run_command (escaped.str, &description, &error);
+	str_free (&escaped);
+	if (error)
 	{
+		print_error ("%s: %s", path, error->message);
+		error_free (error);
 		str_free (&description);
-		print_error ("%s: %s", path, strerror (errno));
 		return NULL;
 	}
 
@@ -4140,8 +4282,8 @@ info_tab_plugin_load (const char *path)
 	str_enforce_utf8 (&description);
 	if (!description.len)
 	{
-		str_free (&description);
 		print_error ("%s: %s", path, "missing description");
+		str_free (&description);
 		return NULL;
 	}
 
@@ -4579,7 +4721,7 @@ help_tab_on_action (enum action action)
 	if (action == ACTION_DESCRIBE)
 	{
 		app_show_message (xstrdup ("Configuration name: "),
-			xstrdup (g_action_names[a]));
+			xstrdup (action_name (a)));
 		return true;
 	}
 	if (action != ACTION_CHOOSE || a == ACTION_CHOOSE /* avoid recursion */)
@@ -4604,9 +4746,9 @@ help_tab_assign_action (enum action action)
 
 static void
 help_tab_group (struct binding *keys, size_t len, struct strv *out,
-	bool bound[ACTION_COUNT])
+	bool bound[], size_t action_count)
 {
-	for (enum action i = 0; i < ACTION_COUNT; i++)
+	for (enum action i = 0; i < action_count; i++)
 	{
 		struct strv ass = strv_make ();
 		for (size_t k = 0; k < len; k++)
@@ -4616,7 +4758,7 @@ help_tab_group (struct binding *keys, size_t len, struct strv *out,
 		{
 			char *joined = strv_join (&ass, ", ");
 			strv_append_owned (out, xstrdup_printf
-				("  %s%c%s", g_action_descriptions[i], 0, joined));
+				("  %s%c%s", action_description (i), 0, joined));
 			free (joined);
 
 			bound[i] = true;
@@ -4627,13 +4769,13 @@ help_tab_group (struct binding *keys, size_t len, struct strv *out,
 }
 
 static void
-help_tab_unbound (struct strv *out, bool bound[ACTION_COUNT])
+help_tab_unbound (struct strv *out, bool bound[], size_t action_count)
 {
-	for (enum action i = 0; i < ACTION_COUNT; i++)
+	for (enum action i = 0; i < action_count; i++)
 		if (!bound[i])
 		{
 			strv_append_owned (out,
-				xstrdup_printf ("  %s%c", g_action_descriptions[i], 0));
+				xstrdup_printf ("  %s%c", action_description (i), 0));
 			help_tab_assign_action (i);
 		}
 }
@@ -4663,27 +4805,30 @@ help_tab_init (void)
 	struct strv *lines = &g_help_tab.lines;
 	*lines = strv_make ();
 
-	bool bound[ACTION_COUNT] = { [ACTION_NONE] = true };
+	size_t bound_len = ACTION_USER_0 + g.action_names.len;
+	bool *bound = xcalloc (bound_len, sizeof *bound);
+	bound[ACTION_NONE] = true;
 
 	strv_append (lines, "Normal mode actions");
-	help_tab_group (g_normal_keys, g_normal_keys_len, lines, bound);
+	help_tab_group (g_normal_keys, g_normal_keys_len, lines, bound, bound_len);
 	strv_append (lines, "");
 
 	strv_append (lines, "Editor mode actions");
-	help_tab_group (g_editor_keys, g_editor_keys_len, lines, bound);
+	help_tab_group (g_editor_keys, g_editor_keys_len, lines, bound, bound_len);
 	strv_append (lines, "");
 
 	bool have_unbound = false;
-	for (enum action i = 0; i < ACTION_COUNT; i++)
+	for (size_t i = 0; i < bound_len; i++)
 		if (!bound[i])
 			have_unbound = true;
 
 	if (have_unbound)
 	{
 		strv_append (lines, "Unbound actions");
-		help_tab_unbound (lines, bound);
+		help_tab_unbound (lines, bound, bound_len);
 		strv_append (lines, "");
 	}
+	free (bound);
 
 	struct tab *super = &g_help_tab.super;
 	tab_init (super, "Help");
