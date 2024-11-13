@@ -33,6 +33,8 @@ You can get a package with the latest development version using Arch Linux's
 https://aur.archlinux.org/packages/nncmpp-git[AUR],
 or as a https://git.janouch.name/p/nixexprs[Nix derivation].
 
+Stable versions are present in: OpenBSD ports.
+
 Documentation
 -------------
 See the link:nncmpp.adoc[man page] for information about usage.
