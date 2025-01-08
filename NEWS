@@ -5,6 +5,8 @@ Unreleased
  * Added ability to configure bindable user-defined actions;
    these can launch arbitrary shell commands
 
+ * Prevented crashes when the daemon disconnects during search
+
  * X11: added support for font fallbacks to the editor as well
 
 
