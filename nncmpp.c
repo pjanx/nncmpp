@@ -3785,6 +3785,8 @@ static void
 search_on_changed (void)
 {
 	struct mpd_client *c = &g.client;
+	if (c->state != MPD_CONNECTED)
+		return;
 
 	size_t len;
 	char *u8 = (char *) u32_to_u8 (g.editor.line, g.editor.len + 1, NULL, &len);
