@@ -9,6 +9,8 @@ Unreleased
 
  * X11: added support for font fallbacks to the editor as well
 
+ * X11: fixed that XSettings had to be present
+
 
 2.1.1 (2024-02-27)
 
