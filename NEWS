@@ -11,6 +11,8 @@ Unreleased
 
  * X11: fixed that XSettings had to be present
 
+ * X11: fixed a new Fontconfig warning
+
 
 2.1.1 (2024-02-27)
 
