@@ -2,6 +2,7 @@
 /build
 
 # Qt Creator files
+/.qtcreator
 /CMakeLists.txt.user*
 /nncmpp.config
 /nncmpp.files
