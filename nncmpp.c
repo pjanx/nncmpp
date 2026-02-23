@@ -1,7 +1,7 @@
 /*
  * nncmpp -- the MPD client you never knew you needed
  *
- * Copyright (c) 2016 - 2024, Přemysl Eric Janouch <p@janouch.name>
+ * Copyright (c) 2016 - 2026, Přemysl Eric Janouch <p@janouch.name>
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted.
@@ -74,6 +74,9 @@ enum
 #ifdef WITH_X11
 #define LIBERTY_XUI_WANT_X11
 #endif // WITH_X11
+#ifdef WITH_APPKIT
+#define LIBERTY_XUI_WANT_APPKIT
+#endif // WITH_APPKIT
 #include "liberty/liberty-xui.c"
 
 #include <dirent.h>
@@ -1910,7 +1913,7 @@ app_layout_status (struct layout *out)
 
 	if (!stopped && g.song_elapsed >= 0 && g.song_duration >= 1)
 		app_push (&l, g.ui->gauge (attrs[0]))
-			->id = WIDGET_GAUGE;
+			->widget_id = WIDGET_GAUGE;
 	else
 		app_push_fill (&l, g.ui->padding (attrs[0], 0, 1));
 
@@ -1918,7 +1921,7 @@ app_layout_status (struct layout *out)
 	{
 		app_push (&l, g.ui->padding (attrs[0], 1, 1));
 		app_push (&l, g.ui->label (attrs[0], volume.str))
-			->id = WIDGET_VOLUME;
+			->widget_id = WIDGET_VOLUME;
 	}
 	str_free (&volume);
 
@@ -1934,20 +1937,20 @@ app_layout_tabs (struct layout *out)
 
 	// The help tab is disguised so that it's not too intruding
 	app_push (&l, g.ui->padding (attrs[g.active_tab == g.help_tab], 0.25, 1))
-		->id = WIDGET_TAB;
+		->widget_id = WIDGET_TAB;
 	app_push (&l, g.ui->label (attrs[g.active_tab == g.help_tab], APP_TITLE))
-		->id = WIDGET_TAB;
+		->widget_id = WIDGET_TAB;
 
 	// XXX: attrs[0]?
 	app_push (&l, g.ui->padding (attrs[g.active_tab == g.help_tab], 0.5, 1))
-		->id = WIDGET_TAB;
+		->widget_id = WIDGET_TAB;
 
 	int i = 0;
 	LIST_FOR_EACH (struct tab, iter, g.tabs)
 	{
 		struct widget *w = app_push (&l,
 			g.ui->label (attrs[iter == g.active_tab], iter->name));
-		w->id = WIDGET_TAB;
+		w->widget_id = WIDGET_TAB;
 		w->userdata = ++i;
 	}
 
@@ -1958,7 +1961,7 @@ app_layout_tabs (struct layout *out)
 	if (g.spectrum_fd != -1)
 	{
 		app_push (&l, g.ui->spectrum (attrs[0], g.spectrum.bars))
-			->id = WIDGET_SPECTRUM;
+			->widget_id = WIDGET_SPECTRUM;
 	}
 #endif  // WITH_FFTW
 
@@ -2060,7 +2063,7 @@ app_layout_view (struct layout *out, int height)
 {
 	struct layout l = {};
 	struct widget *list = app_push_fill (&l, g.ui->list ());
-	list->id = WIDGET_LIST;
+	list->widget_id = WIDGET_LIST;
 	list->height = height;
 	list->width = g_xui.width;
 
@@ -2069,7 +2072,7 @@ app_layout_view (struct layout *out, int height)
 	{
 		struct widget *scrollbar = g.ui->scrollbar (APP_ATTR (SCROLLBAR));
 		list->width -= scrollbar->width;
-		app_push (&l, scrollbar)->id = WIDGET_SCROLLBAR;
+		app_push (&l, scrollbar)->widget_id = WIDGET_SCROLLBAR;
 	}
 
 	int to_show = MIN ((int) tab->item_count - tab->item_top,
@@ -2208,7 +2211,7 @@ app_layout_statusbar (struct layout *out)
 
 		app_flush_layout (&l, out);
 		LIST_FOR_EACH (struct widget, w, l.head)
-			w->id = WIDGET_MESSAGE;
+			w->widget_id = WIDGET_MESSAGE;
 	}
 	else if (g.editor.line)
 	{
@@ -2230,10 +2233,10 @@ app_layout_statusbar (struct layout *out)
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 static struct widget *
-app_widget_by_id (int id)
+app_widget_by_id (int widget_id)
 {
 	LIST_FOR_EACH (struct widget, w, g_xui.widgets)
-		if (w->id == id)
+		if (w->widget_id == widget_id)
 			return w;
 	return NULL;
 }
@@ -2891,7 +2894,7 @@ enum { APP_KEYMOD_DOUBLE_CLICK = 1 << 15 };
 static bool
 app_process_left_mouse_click (struct widget *w, int x, int y, int modifiers)
 {
-	switch (w->id)
+	switch (w->widget_id)
 	{
 	case WIDGET_BUTTON:
 		app_process_action (w->userdata);
@@ -3002,10 +3005,10 @@ app_process_mouse (termo_mouse_event_t type, int x, int y, int button,
 	switch (button)
 	{
 	case 1:
-		g.ui_dragging = target->id;
+		g.ui_dragging = target->widget_id;
 		return app_process_left_mouse_click (target, x, y, modifiers);
 	case 4:
-		switch (target->id)
+		switch (target->widget_id)
 		{
 		case WIDGET_LIST:
 			return app_process_action (ACTION_SCROLL_UP);
@@ -3020,7 +3023,7 @@ app_process_mouse (termo_mouse_event_t type, int x, int y, int button,
 		}
 		break;
 	case 5:
-		switch (target->id)
+		switch (target->widget_id)
 		{
 		case WIDGET_LIST:
 			return app_process_action (ACTION_SCROLL_DOWN);
@@ -3343,13 +3346,13 @@ static void
 current_tab_move (int from, int to)
 {
 	compact_map_t map;
-	const char *id;
+	const char *item_id;
 	if (!(map = item_list_get (&g.playlist, from))
-	 || !(id = compact_map_find (map, "id")))
+	 || !(item_id = compact_map_find (map, "id")))
 		return;
 
 	char *target_str = xstrdup_printf ("%d", to);
-	mpd_client_send_command (&g.client, "moveid", id, target_str, NULL);
+	mpd_client_send_command (&g.client, "moveid", item_id, target_str, NULL);
 	free (target_str);
 }
 
@@ -3391,7 +3394,7 @@ current_tab_on_action (enum action action)
 	compact_map_t map = item_list_get (&g.playlist, tab->item_selected);
 	switch (action)
 	{
-		const char *id;
+		const char *item_id;
 	case ACTION_GOTO_PLAYING:
 		if (g.song < 0 || (size_t) g.song >= tab->item_count)
 			return false;
@@ -3405,13 +3408,13 @@ current_tab_on_action (enum action action)
 		return current_tab_move_selection (+1);
 	case ACTION_CHOOSE:
 		tab->item_mark = -1;
-		return map && (id = compact_map_find (map, "id"))
-			&& MPD_SIMPLE ("playid", id);
+		return map && (item_id = compact_map_find (map, "id"))
+			&& MPD_SIMPLE ("playid", item_id);
 	case ACTION_DESCRIBE:
-		if (!map || !(id = compact_map_find (map, "file")))
+		if (!map || !(item_id = compact_map_find (map, "file")))
 			return false;
 
-		app_show_message (xstrdup ("Path: "), xstrdup (id));
+		app_show_message (xstrdup ("Path: "), xstrdup (item_id));
 		return true;
 	case ACTION_DELETE:
 	{
@@ -3424,8 +3427,8 @@ current_tab_on_action (enum action action)
 		for (int i = range.from; i <= range.upto; i++)
 		{
 			if ((map = item_list_get (&g.playlist, i))
-			 && (id = compact_map_find (map, "id")))
-				mpd_client_send_command (c, "deleteid", id, NULL);
+			 && (item_id = compact_map_find (map, "id")))
+				mpd_client_send_command (c, "deleteid", item_id, NULL);
 		}
 		mpd_client_list_end (c);
 		mpd_client_add_task (c, mpd_on_simple_response, NULL);
@@ -4914,9 +4917,23 @@ spectrum_redraw (void)
 	// A full refresh would be too computationally expensive,
 	// let's hack around it in this case
 	struct widget *spectrum = app_widget_by_id (WIDGET_SPECTRUM);
-	if (spectrum)
-		spectrum->on_render (spectrum);
+	if (!spectrum)
+		return;
 
+#ifdef WITH_APPKIT
+	// AppKit comes with a slightly different rendering model.
+	if (g_xui.appkit_view)
+	{
+		@autoreleasepool
+		{
+			[g_xui.appkit_view setNeedsDisplayInRect:NSMakeRect (
+				spectrum->x, spectrum->y, spectrum->width, spectrum->height)];
+		}
+		return;
+	}
+#endif
+
+	spectrum->on_render (spectrum);
 	poller_idle_set (&g_xui.flip_event);
 }
 
@@ -5253,12 +5270,12 @@ static ssize_t
 mpd_find_pos_of_id (const char *desired_id)
 {
 	compact_map_t map;
-	const char *id;
+	const char *item_id;
 	for (size_t i = 0; i < g.playlist.len; i++)
 	{
 		if ((map = item_list_get (&g.playlist, i))
-		 && (id = compact_map_find (map, "id"))
-		 && !strcmp (id, desired_id))
+		 && (item_id = compact_map_find (map, "id"))
+		 && !strcmp (item_id, desired_id))
 			return i;
 	}
 	return -1;
@@ -5565,7 +5582,7 @@ static struct widget *
 tui_make_button (chtype attrs, const char *label, enum action a)
 {
 	struct widget *w = tui_make_label (attrs, 0, label);
-	w->id = WIDGET_BUTTON;
+	w->widget_id = WIDGET_BUTTON;
 	w->userdata = a;
 	return w;
 }
@@ -5778,95 +5795,108 @@ static struct app_ui app_tui_ui =
 	.editor      = tui_make_editor,
 };
 
-// --- X11 ---------------------------------------------------------------------
+// --- Shared GUI Icons --------------------------------------------------------
 
-#ifdef WITH_X11
+#if defined WITH_X11 || defined WITH_APPKIT
+
+struct app_icon_point
+{
+	double x;
+	double y;
+};
 
 // On a 20x20 raster to make it feasible to design on paper.
-#define X11_STOP {INFINITY, INFINITY}
-static const XPointDouble
-	x11_icon_previous[] =
+#define STOP {INFINITY, INFINITY}
+static const struct app_icon_point
+	app_icon_previous[] =
 	{
-		{10, 0}, {0, 10}, {10, 20}, X11_STOP,
-		{20, 0}, {10, 10}, {20, 20}, X11_STOP, X11_STOP,
+		{10, 0}, {0, 10}, {10, 20}, STOP,
+		{20, 0}, {10, 10}, {20, 20}, STOP, STOP,
 	},
-	x11_icon_pause[] =
+	app_icon_pause[] =
 	{
-		{1, 0}, {7, 0}, {7, 20}, {1, 20}, X11_STOP,
-		{13, 0}, {19, 0}, {19, 20}, {13, 20}, X11_STOP, X11_STOP,
+		{1, 0}, {7, 0}, {7, 20}, {1, 20}, STOP,
+		{13, 0}, {19, 0}, {19, 20}, {13, 20}, STOP, STOP,
 	},
-	x11_icon_play[] =
+	app_icon_play[] =
 	{
-		{0, 0}, {20, 10}, {0, 20}, X11_STOP, X11_STOP,
+		{0, 0}, {20, 10}, {0, 20}, STOP, STOP,
 	},
-	x11_icon_stop[] =
+	app_icon_stop[] =
 	{
-		{0, 0}, {20, 0}, {20, 20}, {0, 20}, X11_STOP, X11_STOP,
+		{0, 0}, {20, 0}, {20, 20}, {0, 20}, STOP, STOP,
 	},
-	x11_icon_next[] =
+	app_icon_next[] =
 	{
-		{0, 0}, {10, 10}, {0, 20}, X11_STOP,
-		{10, 0}, {20, 10}, {10, 20}, X11_STOP, X11_STOP,
+		{0, 0}, {10, 10}, {0, 20}, STOP,
+		{10, 0}, {20, 10}, {10, 20}, STOP, STOP,
 	},
-	x11_icon_repeat[] =
+	app_icon_repeat[] =
 	{
 		{0, 12}, {0, 6}, {3, 3}, {13, 3}, {13, 0}, {20, 4.5},
-		{13, 9}, {13, 6}, {3, 6}, {3, 10}, X11_STOP,
+		{13, 9}, {13, 6}, {3, 6}, {3, 10}, STOP,
 		{0, 15.5}, {7, 11}, {7, 14}, {17, 14}, {17, 10}, {20, 8},
-		{20, 14}, {17, 17}, {7, 17}, {7, 20}, X11_STOP, X11_STOP,
+		{20, 14}, {17, 17}, {7, 17}, {7, 20}, STOP, STOP,
 	},
-	x11_icon_random[] =
+	app_icon_random[] =
 	{
-		{0, 6}, {0, 3}, {5, 3}, {6, 4.5}, {4, 7.5}, {3, 6}, X11_STOP,
+		{0, 6}, {0, 3}, {5, 3}, {6, 4.5}, {4, 7.5}, {3, 6}, STOP,
 		{9, 15.5}, {11, 12.5}, {12, 14}, {13, 14}, {13, 11}, {20, 15.5},
-		{13, 20}, {13, 17}, {10, 17}, X11_STOP,
+		{13, 20}, {13, 17}, {10, 17}, STOP,
 		{0, 17}, {0, 14}, {3, 14}, {10, 3}, {13, 3}, {13, 0}, {20, 4.5},
-		{13, 9}, {13, 6}, {12, 6}, {5, 17}, X11_STOP, X11_STOP,
+		{13, 9}, {13, 6}, {12, 6}, {5, 17}, STOP, STOP,
 	},
-	x11_icon_single[] =
+	app_icon_single[] =
 	{
 		{7, 6}, {7, 4}, {9, 2}, {12, 2}, {12, 15}, {14, 15}, {14, 18},
-		{7, 18}, {7, 15}, {9, 15}, {9, 6}, X11_STOP, X11_STOP,
+		{7, 18}, {7, 15}, {9, 15}, {9, 6}, STOP, STOP,
 	},
-	x11_icon_consume[] =
+	app_icon_consume[] =
 	{
 		{0, 13}, {0, 7}, {4, 3}, {10, 3}, {14, 7}, {5, 10}, {14, 13},
-		{10, 17}, {4, 17}, X11_STOP,
-		{16, 12}, {16, 8}, {20, 8}, {20, 12}, X11_STOP, X11_STOP,
+		{10, 17}, {4, 17}, STOP,
+		{16, 12}, {16, 8}, {20, 8}, {20, 12}, STOP, STOP,
 	};
+#undef STOP
 
-static const XPointDouble *
-x11_icon_for_action (enum action action)
+static const struct app_icon_point *
+app_icon_for_action (enum action action)
 {
 	switch (action)
 	{
 	case ACTION_MPD_PREVIOUS:
-		return x11_icon_previous;
+		return app_icon_previous;
 	case ACTION_MPD_TOGGLE:
-		return g.state == PLAYER_PLAYING ? x11_icon_pause : x11_icon_play;
+		return g.state == PLAYER_PLAYING ? app_icon_pause : app_icon_play;
 	case ACTION_MPD_STOP:
-		return x11_icon_stop;
+		return app_icon_stop;
 	case ACTION_MPD_NEXT:
-		return x11_icon_next;
+		return app_icon_next;
 	case ACTION_MPD_REPEAT:
-		return x11_icon_repeat;
+		return app_icon_repeat;
 	case ACTION_MPD_RANDOM:
-		return x11_icon_random;
+		return app_icon_random;
 	case ACTION_MPD_SINGLE:
-		return x11_icon_single;
+		return app_icon_single;
 	case ACTION_MPD_CONSUME:
-		return x11_icon_consume;
+		return app_icon_consume;
 	default:
 		return NULL;
 	}
 }
+
+#endif  // WITH_X11 || WITH_APPKIT
+
+// --- X11 ---------------------------------------------------------------------
+
+#ifdef WITH_X11
 
 static void
 x11_render_button (struct widget *self)
 {
 	x11_render_padding (self);
 
-	const XPointDouble *icon = x11_icon_for_action (self->userdata);
+	const struct app_icon_point *icon = app_icon_for_action (self->userdata);
 	if (!icon)
 	{
 		x11_render_label (self);
@@ -5874,7 +5904,8 @@ x11_render_button (struct widget *self)
 	}
 
 	size_t total = 0;
-	for (size_t i = 0; icon[i].x != INFINITY || icon[i - 1].x != INFINITY; i++)
+	while (!isinf (icon[total].x)     || !isinf (icon[total].y)
+		|| !isinf (icon[total + 1].x) || !isinf (icon[total + 1].y))
 		total++;
 
 	// TODO: There should be an attribute for buttons, to handle this better.
@@ -5893,7 +5924,7 @@ x11_render_button (struct widget *self)
 
 	int x = self->x, y = self->y + (self->height - self->width) / 2;
 	XPointDouble buffer[total], *p = buffer;
-	for (size_t i = 0; i < total; i++)
+	for (size_t i = 0; i <= total; i++)
 		if (icon[i].x != INFINITY)
 		{
 			p->x = x + icon[i].x / 20.0 * self->width;
@@ -5914,10 +5945,10 @@ static struct widget *
 x11_make_button (chtype attrs, const char *label, enum action a)
 {
 	struct widget *w = x11_make_label (attrs, 0, label);
-	w->id = WIDGET_BUTTON;
+	w->widget_id = WIDGET_BUTTON;
 	w->userdata = a;
 
-	if (x11_icon_for_action (a))
+	if (app_icon_for_action (a))
 	{
 		w->on_render = x11_render_button;
 
@@ -6102,6 +6133,236 @@ static struct app_ui app_x11_ui =
 
 #endif  // WITH_X11
 
+// --- AppKit ------------------------------------------------------------------
+
+#ifdef WITH_APPKIT
+
+static void
+appkit_render_button (struct widget *self)
+{
+	appkit_render_padding (self);
+
+	const struct app_icon_point *icon = app_icon_for_action (self->userdata);
+	if (!icon)
+	{
+		appkit_render_label (self);
+		return;
+	}
+
+	// TODO: There should be an attribute for buttons, to handle this better.
+	NSColor *color = appkit_fg (self);
+	if (!(self->attrs & A_BOLD))
+		color = [color colorWithAlphaComponent:[color alphaComponent] * 0.5];
+
+	[color setFill];
+	NSBezierPath *path = [NSBezierPath bezierPath];
+	[path setWindingRule:NSWindingRuleEvenOdd];
+
+	int x = self->x, y = self->y + (self->height - self->width) / 2;
+	bool started = false;
+	for (const struct app_icon_point *p = icon;
+		!isinf (p[0].x) || !isinf (p[0].y)
+	 || !isinf (p[1].x) || !isinf (p[1].y); p++)
+	{
+		if (isinf (p->x))
+		{
+			[path closePath];
+			started = false;
+			continue;
+		}
+
+		NSPoint point = NSMakePoint
+			(x + p->x / 20.0 * self->width, y + p->y / 20.0 * self->width);
+		if (!started)
+			[path moveToPoint:point];
+		else
+			[path lineToPoint:point];
+		started = true;
+	}
+	[path fill];
+}
+
+static struct widget *
+appkit_make_button (chtype attrs, const char *label, enum action a)
+{
+	struct widget *w = appkit_make_label (attrs, 0, label);
+	w->widget_id = WIDGET_BUTTON;
+	w->userdata = a;
+
+	if (app_icon_for_action (a))
+	{
+		w->on_render = appkit_render_button;
+
+		// It should be padded by the caller horizontally.
+		w->height = g_xui.vunit;
+		w->width = w->height * 3 / 4;
+	}
+	return w;
+}
+
+static void
+appkit_render_gauge (struct widget *self)
+{
+	appkit_render_padding (self);
+	if (g.state == PLAYER_STOPPED || g.song_elapsed < 0 || g.song_duration < 1)
+		return;
+
+	int part = (float) g.song_elapsed / g.song_duration * self->width;
+	[appkit_bg_attrs (APP_ATTR (ELAPSED)) setFill];
+	NSRectFill (NSMakeRect
+		(self->x, self->y + self->height / 8, part, self->height * 3 / 4));
+	[appkit_bg_attrs (APP_ATTR (REMAINS)) setFill];
+	NSRectFill (NSMakeRect (self->x + part, self->y + self->height / 8,
+		self->width - part, self->height * 3 / 4));
+}
+
+// TODO: Perhaps it should save the number within.
+static struct widget *
+appkit_make_gauge (chtype attrs)
+{
+	struct widget *w = xcalloc (1, sizeof *w + 1);
+	w->on_render = appkit_render_gauge;
+	w->attrs = attrs;
+	w->width = -1;
+	w->height = g_xui.vunit;
+	return w;
+}
+
+static void
+appkit_render_spectrum (struct widget *self)
+{
+	appkit_render_padding (self);
+
+#ifdef WITH_FFTW
+	int bars = g.spectrum.bars;
+	if (bars < 1)
+		return;
+
+	int step = MAX (1, self->width / bars);
+	[appkit_fg (self) setFill];
+	for (int i = 0; i < bars; i++)
+	{
+		int height = round ((self->height - 2) * g.spectrum.spectrum[i]);
+		NSRectFill (NSMakeRect (self->x + i * step,
+			self->y + self->height - 1 - height,
+			step, height));
+	}
+#endif  // WITH_FFTW
+}
+
+static struct widget *
+appkit_make_spectrum (chtype attrs, int width)
+{
+	struct widget *w = xcalloc (1, sizeof *w + 1);
+	w->on_render = appkit_render_spectrum;
+	w->attrs = attrs;
+	w->width = width * g_xui.vunit / 2;
+	w->height = g_xui.vunit;
+	return w;
+}
+
+static void
+appkit_render_scrollbar (struct widget *self)
+{
+	appkit_render_padding (self);
+
+	struct tab *tab = g.active_tab;
+	struct scrollbar bar =
+		app_compute_scrollbar (tab, app_visible_items_height (), g_xui.vunit);
+
+	[appkit_fg_attrs (self->attrs) setFill];
+	NSRectFill (NSMakeRect
+		(self->x, self->y + bar.start, self->width, bar.length));
+}
+
+static struct widget *
+appkit_make_scrollbar (chtype attrs)
+{
+	struct widget *w = xcalloc (1, sizeof *w + 1);
+	w->on_render = appkit_render_scrollbar;
+	w->attrs = attrs;
+	w->width = g_xui.vunit / 2;
+	return w;
+}
+
+static struct widget *
+appkit_make_list (void)
+{
+	struct widget *w = xcalloc (1, sizeof *w + 1);
+	w->on_render = appkit_render_padding;
+	return w;
+}
+
+static void
+appkit_render_editor (struct widget *self)
+{
+	appkit_render_padding (self);
+
+	NSFont *font = appkit_widget_font (self);
+	NSColor *color = appkit_fg (self);
+
+	// A simplistic adaptation of tui_render_editor() follows.
+	const struct line_editor *e = &g.editor;
+	int x = self->x;
+	if (e->prompt)
+	{
+		hard_assert (e->prompt < 127);
+		const char prompt[2] = { e->prompt, 0 };
+		appkit_font_draw (font, color, x, self->y, prompt, self->width);
+		x += appkit_font_hadvance (font, prompt) + g_xui.vunit / 4;
+	}
+
+	// TODO: Make this scroll around the caret.
+	size_t len;
+	ucs4_t *buf = xcalloc (e->len + 1, sizeof *buf);
+	u32_cpy (buf, e->line, e->point);
+	char *a = (char *) u32_to_u8 (buf, u32_strlen (buf) + 1, NULL, &len);
+	u32_cpy (buf, e->line + e->point, e->len - e->point + 1);
+	char *b = (char *) u32_to_u8 (buf, u32_strlen (buf) + 1, NULL, &len);
+	free (buf);
+
+	appkit_font_draw (font, color, x, self->y, a,
+		MAX (0, self->width - (x - self->x)));
+	x += appkit_font_hadvance (font, a);
+	int caret = x;
+	appkit_font_draw (font, color, x, self->y, b,
+		MAX (0, self->width - (x - self->x)));
+	x += appkit_font_hadvance (font, b);
+	free (a);
+	free (b);
+
+	[color setFill];
+	NSRectFill (NSMakeRect (caret, self->y, 2, self->height));
+}
+
+static struct widget *
+appkit_make_editor (chtype attrs)
+{
+	// TODO: This should ideally measure the text, and copy it to w->text.
+	struct widget *w = xcalloc (1, sizeof *w + 1);
+	w->on_render = appkit_render_editor;
+	w->attrs = attrs;
+	w->width = -1;
+	w->height = g_xui.vunit;
+	return w;
+}
+
+static struct app_ui app_appkit_ui =
+{
+	.padding     = appkit_make_padding,
+	.label       = app_make_label,
+	.button      = appkit_make_button,
+	.gauge       = appkit_make_gauge,
+	.spectrum    = appkit_make_spectrum,
+	.scrollbar   = appkit_make_scrollbar,
+	.list        = appkit_make_list,
+	.editor      = appkit_make_editor,
+
+	.have_icons  = true,
+};
+
+#endif  // WITH_APPKIT
+
 // --- Signals -----------------------------------------------------------------
 
 static int g_signal_pipe[2];            ///< A pipe used to signal... signals
@@ -6112,10 +6373,10 @@ static volatile sig_atomic_t g_termination_requested;
 static volatile sig_atomic_t g_winch_received;
 
 static void
-signals_postpone_handling (char id)
+signals_postpone_handling (char signal_id)
 {
 	int original_errno = errno;
-	if (write (g_signal_pipe[1], &id, 1) == -1)
+	if (write (g_signal_pipe[1], &signal_id, 1) == -1)
 		soft_assert (errno == EAGAIN);
 	errno = original_errno;
 }
@@ -6176,8 +6437,8 @@ app_on_signal_pipe_readable (const struct pollfd *fd, void *user_data)
 {
 	(void) user_data;
 
-	char id = 0;
-	(void) read (fd->fd, &id, 1);
+	char signal_id = 0;
+	(void) read (fd->fd, &signal_id, 1);
 
 	if (g_termination_requested && !g.quitting)
 		app_quit ();
@@ -6262,7 +6523,7 @@ app_init_ui (bool requested_x11)
 	g_editor_keys = app_init_bindings ("editor",
 		g_editor_defaults, N_ELEMENTS (g_editor_defaults), &g_editor_keys_len);
 
-	// It doesn't work 100% (e.g. incompatible with undelining in urxvt)
+	// It doesn't work 100% (e.g. incompatible with underlining in urxvt)
 	// TODO: make this configurable
 	g.use_partial_boxes = g_xui.locale_is_utf8;
 
@@ -6277,6 +6538,11 @@ app_init_ui (bool requested_x11)
 		g.ui = &app_x11_ui;
 	else
 #endif  // WITH_X11
+#ifdef WITH_APPKIT
+	if (g_xui.ui == &appkit_ui)
+		g.ui = &app_appkit_ui;
+	else
+#endif  // WITH_APPKIT
 		g.ui = &app_tui_ui;
 }
 
@@ -6308,16 +6574,16 @@ main (int argc, char *argv[])
 	static const struct opt opts[] =
 	{
 		{ 'd', "debug", NULL, 0, "run in debug mode" },
-#ifdef WITH_X11
-		{ 'x', "x11", NULL, 0, "use X11 even when run from a terminal" },
-#endif  // WITH_X11
+#if defined WITH_X11 || defined WITH_APPKIT
+		{ 'g', "gui", NULL, 0, "use graphical interface even from a terminal" },
+#endif  // WITH_X11 || WITH_APPKIT
 		{ 'h', "help", NULL, 0, "display this help and exit" },
 		{ 'v', "verbose", NULL, 0, "log messages on standard error" },
 		{ 'V', "version", NULL, 0, "output version information and exit" },
 		{ 0, NULL, NULL, 0, NULL }
 	};
 
-	bool requested_x11 = false;
+	bool requested_gui = false;
 	struct opt_handler oh
 		= opt_handler_make (argc, argv, opts, "[URL | PATH]...", "MPD client.");
 
@@ -6328,9 +6594,11 @@ main (int argc, char *argv[])
 	case 'd':
 		g_debug_mode = true;
 		break;
-	case 'x':
-		requested_x11 = true;
+#if defined WITH_X11 || defined WITH_APPKIT
+	case 'g':
+		requested_gui = true;
 		break;
+#endif  // WITH_X11 || WITH_APPKIT
 	case 'v':
 		g_verbose_mode = true;
 		break;
@@ -6350,6 +6618,11 @@ main (int argc, char *argv[])
 	argv += optind;
 	opt_handler_free (&oh);
 
+#ifdef WITH_APPKIT
+	// Let's not get ASCII when launched from outside a terminal.
+	if (!getenv ("LC_ALL") && !getenv ("LC_CTYPE") && !getenv ("LANG"))
+		setenv ("LC_CTYPE", "C.UTF-8", 1);
+#endif
 	// We only need to convert to and from the terminal encoding
 	if (!setlocale (LC_CTYPE, ""))
 		print_warning ("failed to set the locale");
@@ -6359,7 +6632,7 @@ main (int argc, char *argv[])
 	app_load_configuration ();
 	signals_setup_handlers ();
 	app_init_poller_events ();
-	app_init_ui (requested_x11);
+	app_init_ui (requested_gui);
 
 	if (g_debug_mode)
 		app_prepend_tab (debug_tab_init ());

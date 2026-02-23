@@ -11,5 +11,6 @@
 #cmakedefine WITH_FFTW
 #cmakedefine WITH_PULSE
 #cmakedefine WITH_X11
+#cmakedefine WITH_APPKIT
 
 #endif  /* ! CONFIG_H */

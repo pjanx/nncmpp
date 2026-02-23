@@ -2,8 +2,8 @@ nncmpp
 ======
 
 'nncmpp' is yet another MPD client.  Its specialty is running equally well in
-the terminal, or as an X11 client--it will provide the same keyboard- and
-mouse-friendly interface.
+the terminal, as an X11 client, or as a macOS application--it will provide
+the same keyboard- and mouse-friendly interface.
 
 This project began its life as a simplified TUI version of Sonata.  I had
 already written a lot of the required code before, so I had the perfect
@@ -74,8 +74,8 @@ however, tricky to get consistent results on, so be aware of the following:
  - Xterm needs `XTerm*metaSendsEscape: true` for the default bindings to work
  - urxvt's 'vtwheel' plugin sabotages scrolling
 
-The X11 graphical interface is a second-class citizen, so some limitations of
-terminals carry over, such as the plain default theme.
+The X11 and macOS graphical interfaces are second-class citizens, so some
+limitations of terminals carry over, such as the plain default theme.
 
 Contributing and Support
 ------------------------

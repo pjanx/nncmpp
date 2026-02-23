@@ -77,6 +77,15 @@ if (WITH_X11)
 	list (APPEND extra_libraries ${x11_LIBRARIES})
 endif ()
 
+add_option (WITH_APPKIT "Build as a bundle with AppKit support" "${APPLE}")
+if (WITH_APPKIT)
+	enable_language (OBJC)
+	set (CMAKE_OBJC_FLAGS
+		"${CMAKE_OBJC_FLAGS} -std=gnu99 -Wall -Wextra -Wno-unused-function")
+	list (APPEND extra_libraries
+		"-framework AppKit" "-framework CoreFoundation")
+endif ()
+
 include_directories (${Unistring_INCLUDE_DIRS}
 	${Ncursesw_INCLUDE_DIRS} ${Termo_INCLUDE_DIRS} ${curl_INCLUDE_DIRS}
 	${fftw_INCLUDE_DIRS} ${libpulse_INCLUDE_DIRS} ${x11_INCLUDE_DIRS})
@@ -120,6 +129,18 @@ add_custom_command (OUTPUT ${actions}
 
 # Build the main executable and link it
 add_executable (${PROJECT_NAME} ${PROJECT_NAME}.c ${actions})
+if (WITH_APPKIT)
+	set_source_files_properties (${PROJECT_NAME}.c PROPERTIES LANGUAGE OBJC)
+	set_target_properties (${PROJECT_NAME} PROPERTIES MACOSX_BUNDLE TRUE)
+
+	set (MACOSX_BUNDLE_GUI_IDENTIFIER name.janouch.${PROJECT_NAME})
+	set (MACOSX_BUNDLE_ICON_FILE ${PROJECT_NAME}.icns)
+
+	include (IconUtils)
+	icon_to_icns (${PROJECT_SOURCE_DIR}/${PROJECT_NAME}.svg
+		"${MACOSX_BUNDLE_ICON_FILE}" icon)
+	target_sources (${PROJECT_NAME} PRIVATE ${icon})
+endif ()
 target_link_libraries (${PROJECT_NAME} ${Unistring_LIBRARIES}
 	${Ncursesw_LIBRARIES} ${Termo_LIBRARIES} ${curl_LIBRARIES}
 	${extra_libraries})

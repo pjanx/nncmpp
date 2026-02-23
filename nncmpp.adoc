@@ -14,10 +14,10 @@ Synopsis
 
 Description
 -----------
-*nncmpp* is a hybrid terminal/X11 MPD client.  On start up it will welcome
-you with an overview of all key bindings and the actions they're assigned to.
-Individual tabs can be switched to either using the mouse or by pressing *M-1*
-through *M-9*, corresponding to the order they appear in.
+*nncmpp* is a hybrid terminal/X11/AppKit MPD client.  On start up it will
+welcome you with an overview of all key bindings and the actions they're
+assigned to.  Individual tabs can be switched to either using the mouse
+or by pressing *M-1* through *M-9*, corresponding to the order they appear in.
 
 As a convenience utility, any program arguments are added to the MPD queue.
 Note that to add files outside the database, you need to connect to MPD using
@@ -29,8 +29,8 @@ Options
 	Adds a "Debug" tab showing all MPD communication and other information
 	that help debug various issues.
 
-*-x*, *--x11*::
-	Use an X11 interface even when run from a terminal.
+*-g*, *--gui*::
+	Use a graphical interface even when run from a terminal.
 	Note that the application may be built with this feature disabled.
 
 *-h*, *--help*::
