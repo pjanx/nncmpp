@@ -1,6 +1,6 @@
-Unreleased
+2.2.0 (2026-05-26)
 
- * Added an AppKit user interface
+ * Added an AppKit user interface; the -x (--x11) option has become -g (--gui)
 
  * Made global search indicate the search terms, and match on filenames
 
