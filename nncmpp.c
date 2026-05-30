@@ -76,6 +76,7 @@ enum
 #endif // WITH_X11
 #ifdef WITH_APPKIT
 #define LIBERTY_XUI_WANT_APPKIT
+#import <MediaPlayer/MediaPlayer.h>
 #endif // WITH_APPKIT
 #include "liberty/liberty-xui.c"
 
@@ -1272,6 +1273,9 @@ static struct app_context
 
 	struct app_ui *ui;                  ///< User interface interface
 	int ui_dragging;                    ///< ID of any dragged widget
+#ifdef WITH_APPKIT
+	MPMediaItemArtwork *ui_artwork;     ///< Now Playing image
+#endif
 
 #ifdef WITH_FFTW
 	struct spectrum spectrum;           ///< Spectrum analyser
@@ -1626,6 +1630,10 @@ app_free_context (void)
 	strv_free (&g.action_commands);
 	item_list_free (&g.playlist);
 
+#ifdef WITH_APPKIT
+	[g.ui_artwork release];
+#endif
+
 #ifdef WITH_FFTW
 	spectrum_free (&g.spectrum);
 	if (g.spectrum_fd != -1)
@@ -1758,6 +1766,42 @@ app_layout_text (const char *str, chtype attrs, struct layout *out)
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
+struct app_song_info
+{
+	const char *file, *subroot_basename, *name, *title, *artist, *album;
+};
+
+static struct app_song_info
+app_extract_song_info (compact_map_t map)
+{
+	struct app_song_info s =
+	{
+		.file   = compact_map_find (map, "file"),
+		.name   = compact_map_find (map, "name"),
+		.title  = compact_map_find (map, "title"),
+		.artist = compact_map_find (map, "artist"),
+		.album  = compact_map_find (map, "album"),
+	};
+
+	// Split the path for files lying within MPD's "music_directory".
+	if (s.file && *s.file != '/' && !strstr (s.file, "://"))
+	{
+		const char *last_slash = strrchr (s.file, '/');
+		if (last_slash)
+			s.subroot_basename = last_slash + 1;
+		else
+			s.subroot_basename = s.file;
+	}
+
+	if (!s.title)
+		s.title = s.name;
+	if (!s.title)
+		s.title = s.subroot_basename;
+	if (!s.title)
+		s.title = s.file;
+	return s;
+}
+
 static void
 app_layout_song_info (struct layout *out)
 {
@@ -1766,29 +1810,13 @@ app_layout_song_info (struct layout *out)
 		return;
 
 	chtype attrs[2] = { APP_ATTR (NORMAL), APP_ATTR (HIGHLIGHT) };
+	struct app_song_info s = app_extract_song_info (map);
 
-	// Split the path for files lying within MPD's "music_directory".
-	const char *file = compact_map_find (map, "file");
-	const char *subroot_basename = NULL;
-	if (file && *file != '/' && !strstr (file, "://"))
-	{
-		const char *last_slash = strrchr (file, '/');
-		if (last_slash)
-			subroot_basename = last_slash + 1;
-		else
-			subroot_basename = file;
-	}
-
-	const char *title = NULL;
-	const char *name = compact_map_find (map, "name");
-	if ((title = compact_map_find (map, "title"))
-	 || (title = name)
-	 || (title = subroot_basename)
-	 || (title = file))
+	if (s.title)
 	{
 		struct layout l = {};
 		app_push (&l, g.ui->padding (attrs[0], 0.25, 1));
-		app_push (&l, g.ui->label (attrs[1], title));
+		app_push (&l, g.ui->label (attrs[1], s.title));
 		app_push_fill (&l, g.ui->padding (attrs[0], 0, 1));
 		app_push (&l, g.ui->padding (attrs[0], 0.25, 1));
 		app_flush_layout (&l, out);
@@ -1799,33 +1827,31 @@ app_layout_song_info (struct layout *out)
 	struct layout l = {};
 	app_push (&l, g.ui->padding (attrs[0], 0.25, 1));
 
-	char *artist = compact_map_find (map, "artist");
-	char *album  = compact_map_find (map, "album");
-	if (artist || album)
+	if (s.artist || s.album)
 	{
-		if (artist)
+		if (s.artist)
 		{
 			app_push (&l, g.ui->label (attrs[0], "by "));
-			app_push (&l, g.ui->label (attrs[1], artist));
+			app_push (&l, g.ui->label (attrs[1], s.artist));
 		}
-		if (album)
+		if (s.album)
 		{
-			app_push (&l, g.ui->label (attrs[0], &" from "[!artist]));
-			app_push (&l, g.ui->label (attrs[1], album));
+			app_push (&l, g.ui->label (attrs[0], &" from "[!s.artist]));
+			app_push (&l, g.ui->label (attrs[1], s.album));
 		}
 	}
-	else if (subroot_basename && subroot_basename != file)
+	else if (s.subroot_basename && s.subroot_basename != s.file)
 	{
-		char *parent = xstrndup (file, subroot_basename - file - 1);
+		char *parent = xstrndup (s.file, s.subroot_basename - s.file - 1);
 		app_push (&l, g.ui->label (attrs[0], "in "));
 		app_push (&l, g.ui->label (attrs[1], parent));
 		free (parent);
 	}
-	else if (file && *file != '/' && strstr (file, "://")
-		&& name && name != title)
+	else if (s.file && *s.file != '/' && strstr (s.file, "://")
+		&& s.name && strcmp (s.name, s.title))
 	{
 		// This is likely to contain the name of an Internet radio.
-		app_push (&l, g.ui->label (attrs[1], name));
+		app_push (&l, g.ui->label (attrs[1], s.name));
 	}
 
 	app_push_fill (&l, g.ui->padding (attrs[0], 0, 1));
@@ -5169,6 +5195,79 @@ mpd_set_elapsed_timer (int msec_past_second)
 	g.elapsed_since = elapsed_msec;
 }
 
+#ifdef WITH_APPKIT
+
+static void
+appkit_update_now_playing (int msec_past_second)
+{
+	MPNowPlayingInfoCenter *np = [MPNowPlayingInfoCenter defaultCenter];
+	MPRemoteCommandCenter *cc = [MPRemoteCommandCenter sharedCommandCenter];
+
+	// Intentionally not showing anything in the stopped state.
+	// We may still receive commands from the keyboard, even those disabled.
+	compact_map_t map = item_list_get (&g.playlist, g.song);
+	if (g.state == PLAYER_STOPPED || !map)
+	{
+		np.nowPlayingInfo = nil;
+		np.playbackState = MPNowPlayingPlaybackStateStopped;
+
+		cc.playCommand.enabled = YES;
+		cc.stopCommand.enabled = NO;
+		cc.pauseCommand.enabled = NO;
+		cc.togglePlayPauseCommand.enabled = YES;
+		cc.nextTrackCommand.enabled = NO;
+		cc.previousTrackCommand.enabled = NO;
+		cc.changePlaybackPositionCommand.enabled = NO;
+		return;
+	}
+
+	struct app_song_info s = app_extract_song_info (map);
+
+	NSTimeInterval duration = MAX (0., g.song_duration);
+	// Note that macOS rounds this value when displaying.
+	NSTimeInterval elapsed_time = g.song_elapsed + msec_past_second / 1000.;
+
+	// We don't want it to advance on its own, as the view jumps around,
+	// given our active status polling.
+	double playback_rate = g.state == PLAYER_PLAYING ? FLT_EPSILON : 0.0;
+
+	// Many properties just aren't visibly useful.
+	np.nowPlayingInfo =
+	@{
+		MPMediaItemPropertyTitle:
+			s.title  ? [NSString stringWithUTF8String:s.title]  : [NSNull null],
+		MPMediaItemPropertyArtist:
+			s.artist ? [NSString stringWithUTF8String:s.artist] : [NSNull null],
+		MPMediaItemPropertyAlbumTitle:
+			s.album  ? [NSString stringWithUTF8String:s.album]  : [NSNull null],
+
+		MPMediaItemPropertyPlaybackDuration:         @(duration),
+		MPMediaItemPropertyArtwork:                  g.ui_artwork,
+		MPNowPlayingInfoPropertyElapsedPlaybackTime: @(elapsed_time),
+		MPNowPlayingInfoPropertyIsLiveStream:        @(duration <= 0),
+		MPNowPlayingInfoPropertyPlaybackQueueIndex:  @(g.song),
+		MPNowPlayingInfoPropertyPlaybackQueueCount:  @(g.playlist.len),
+		MPNowPlayingInfoPropertyPlaybackRate:        @(playback_rate),
+		MPNowPlayingInfoPropertyDefaultPlaybackRate: @(FLT_EPSILON),
+		MPNowPlayingInfoPropertyMediaType:
+			@(MPNowPlayingInfoMediaTypeAudio),
+	};
+	np.playbackState = g.state == PLAYER_PLAYING
+		? MPNowPlayingPlaybackStatePlaying
+		: MPNowPlayingPlaybackStatePaused;
+
+	cc.playCommand.enabled = g.state != PLAYER_PLAYING;
+	cc.stopCommand.enabled = YES;
+	cc.pauseCommand.enabled = g.state == PLAYER_PLAYING;
+	cc.togglePlayPauseCommand.enabled = YES;
+	// To match the main window, these should both be YES.  I'm not sure here.
+	cc.nextTrackCommand.enabled = g.song + 1 < (int) g.playlist.len;
+	cc.previousTrackCommand.enabled = g.song > 0;
+	cc.changePlaybackPositionCommand.enabled = YES;
+}
+
+#endif  // WITH_APPKIT
+
 static void
 mpd_update_playback_state (void)
 {
@@ -5226,6 +5325,14 @@ mpd_update_playback_state (void)
 		mpd_update_playlist_time ();
 
 	xui_invalidate ();
+
+#ifdef WITH_APPKIT
+	if (g_xui.ui == &appkit_ui)
+		@autoreleasepool
+		{
+			appkit_update_now_playing (msec_past_second);
+		}
+#endif
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -6513,6 +6620,84 @@ app_init_poller_events (void)
 		: mpd_on_elapsed_time_tick;
 }
 
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+#ifdef WITH_APPKIT
+
+static void
+appkit_init_now_playing (void)
+{
+	MPRemoteCommandCenter *cc = [MPRemoteCommandCenter sharedCommandCenter];
+
+#define APPKIT_MPD_SIMPLE(cmd, ...)                                \
+	[cc.cmd removeTarget:nil];                                     \
+	[cc.cmd addTargetWithHandler:                                  \
+		^MPRemoteCommandHandlerStatus (MPRemoteCommandEvent *e)    \
+		{                                                          \
+			(void) e;                                              \
+			if (!MPD_SIMPLE (__VA_ARGS__))                         \
+				return MPRemoteCommandHandlerStatusCommandFailed;  \
+			return MPRemoteCommandHandlerStatusSuccess;            \
+		}];
+
+	APPKIT_MPD_SIMPLE (playCommand, "play")
+	APPKIT_MPD_SIMPLE (stopCommand, "stop")
+	APPKIT_MPD_SIMPLE (pauseCommand, "pause", "1")
+
+	// This command is sent by the play/pause media key.
+	APPKIT_MPD_SIMPLE (togglePlayPauseCommand,
+		g.state == PLAYER_STOPPED ? "play" : "pause")
+
+	APPKIT_MPD_SIMPLE (nextTrackCommand, "next")
+	APPKIT_MPD_SIMPLE (previousTrackCommand, "previous")
+
+	// Skipping forward/backward can also be added,
+	// however on macOS this replaces the next/previous buttons altogether.
+
+#undef APPKIT_MPD_SIMPLE
+
+	[cc.changePlaybackPositionCommand removeTarget:nil];
+	[cc.changePlaybackPositionCommand addTargetWithHandler:
+		^MPRemoteCommandHandlerStatus (MPRemoteCommandEvent *e)
+		{
+			char *x = xstrdup_printf ("%f",
+				((MPChangePlaybackPositionCommandEvent *) e).positionTime);
+			bool ok = MPD_SIMPLE ("seekcur", x);
+			free (x);
+
+			if (!ok)
+				return MPRemoteCommandHandlerStatusCommandFailed;
+			return MPRemoteCommandHandlerStatusSuccess;
+		}];
+
+	// So that we immediately show up in Now Playing,
+	// even when we start in a paused state.
+	[MPNowPlayingInfoCenter defaultCenter].playbackState =
+		MPNowPlayingPlaybackStatePlaying;
+
+	// Anything is better than the grey default.
+	// The artwork sadly does not support transparency (it turns white).
+	CGSize artwork_size = CGSizeMake (512, 512);
+	NSImage *artwork_image = [NSImage imageWithSize:artwork_size flipped:NO
+		drawingHandler:^BOOL (NSRect rect)
+		{
+			[[NSColor whiteColor] setFill];
+			NSRectFill (rect);
+			[[NSImage imageNamed:NSImageNameApplicationIcon]
+				drawInRect:NSInsetRect (rect, 64, 64)];
+			return YES;
+		}];
+	g.ui_artwork = [[MPMediaItemArtwork alloc]
+		initWithBoundsSize:artwork_size
+		requestHandler:^NSImage * (CGSize size)
+		{
+			(void) size;
+			return artwork_image;
+		}];
+}
+
+#endif  // WITH_APPKIT
+
 static void
 app_init_ui (bool requested_x11)
 {
@@ -6540,7 +6725,13 @@ app_init_ui (bool requested_x11)
 #endif  // WITH_X11
 #ifdef WITH_APPKIT
 	if (g_xui.ui == &appkit_ui)
+	{
 		g.ui = &app_appkit_ui;
+		@autoreleasepool
+		{
+			appkit_init_now_playing ();
+		}
+	}
 	else
 #endif  // WITH_APPKIT
 		g.ui = &app_tui_ui;

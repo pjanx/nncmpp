@@ -82,8 +82,8 @@ if (WITH_APPKIT)
 	enable_language (OBJC)
 	set (CMAKE_OBJC_FLAGS
 		"${CMAKE_OBJC_FLAGS} -std=gnu99 -Wall -Wextra -Wno-unused-function")
-	list (APPEND extra_libraries
-		"-framework AppKit" "-framework CoreFoundation")
+	list (APPEND extra_libraries "-framework AppKit"
+		"-framework CoreFoundation" "-framework MediaPlayer")
 endif ()
 
 include_directories (${Unistring_INCLUDE_DIRS}
