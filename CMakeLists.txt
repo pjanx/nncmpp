@@ -136,10 +136,19 @@ if (WITH_APPKIT)
 	set (MACOSX_BUNDLE_GUI_IDENTIFIER name.janouch.${PROJECT_NAME})
 	set (MACOSX_BUNDLE_ICON_FILE ${PROJECT_NAME}.icns)
 
-	include (IconUtils)
-	icon_to_icns (${PROJECT_SOURCE_DIR}/${PROJECT_NAME}.svg
-		"${MACOSX_BUNDLE_ICON_FILE}" icon)
-	target_sources (${PROJECT_NAME} PRIVATE ${icon})
+	# XXX: This will not normally work from within Nix.
+	set (icns "${PROJECT_BINARY_DIR}/${MACOSX_BUNDLE_ICON_FILE}")
+	set (iconset "${PROJECT_BINARY_DIR}/${PROJECT_NAME}.iconset")
+	add_custom_command (OUTPUT "${icns}"
+		COMMAND ${CMAKE_COMMAND} -E make_directory "${iconset}"
+		COMMAND sips --js "${PROJECT_SOURCE_DIR}/gen-icon.js" -o "${iconset}"
+		COMMAND iconutil -c icns -o "${icns}" "${iconset}"
+		DEPENDS gen-icon.js
+		COMMENT "Generating application icon" VERBATIM)
+
+	target_sources (${PROJECT_NAME} PRIVATE "${icns}")
+	set_source_files_properties ("${icns}" PROPERTIES
+		MACOSX_PACKAGE_LOCATION Resources)
 endif ()
 target_link_libraries (${PROJECT_NAME} ${Unistring_LIBRARIES}
 	${Ncursesw_LIBRARIES} ${Termo_LIBRARIES} ${curl_LIBRARIES}
