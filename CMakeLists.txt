@@ -150,7 +150,7 @@ if (WITH_APPKIT)
 	set_source_files_properties ("${icns}" PROPERTIES
 		MACOSX_PACKAGE_LOCATION Resources)
 endif ()
-target_link_libraries (${PROJECT_NAME} ${Unistring_LIBRARIES}
+target_link_libraries (${PROJECT_NAME} PRIVATE ${Unistring_LIBRARIES}
 	${Ncursesw_LIBRARIES} ${Termo_LIBRARIES} ${curl_LIBRARIES}
 	${extra_libraries})
 add_threads (${PROJECT_NAME})
