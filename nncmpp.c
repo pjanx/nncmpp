@@ -240,9 +240,9 @@ mpd_read_time (const char *value, int *sec, int *optional_msec)
 		if (end[digits])
 			return;
 
-		if (digits--) msec += (*end++ - '0') * 100;
-		if (digits--) msec += (*end++ - '0') * 10;
-		if (digits--) msec +=  *end++ - '0';
+		if (digits >= 1) msec += (*end++ - '0') * 100;
+		if (digits >= 2) msec += (*end++ - '0') * 10;
+		if (digits >= 3) msec +=  *end++ - '0';
 	}
 
 	*sec = MIN (INT_MAX, n);
@@ -3827,7 +3827,7 @@ search_on_changed (void)
 	// which is necessary to avoid duplicates.  Neither syntax supports OR.
 	// XXX: We should parse this, but it's probably not going to reach 100 soon,
 	//   and it is not really documented what this should even look like.
-	if (strcmp (c->got_hello, "0.21.") > 1)
+	if (strcmp (c->got_hello, "0.21.") > 0)
 	{
 		char *quoted = mpd_quoted_filter_string (u8);
 		char *expression = xstrdup_printf ("((!(any contains %s)) AND "
@@ -4602,12 +4602,12 @@ info_tab_on_plugin_stdout (const struct pollfd *fd, void *user_data)
 	switch (socket_io_try_read (fd->fd, buf))
 	{
 	case SOCKET_IO_OK:
-		str_enforce_utf8 (buf);
 		return;
 	case SOCKET_IO_ERROR:
 		print_error ("error reading from plugin: %s", strerror (errno));
 		// Fall-through
 	case SOCKET_IO_EOF:
+		str_enforce_utf8 (buf);
 		info_tab_plugin_abort ();
 		info_tab_update ();
 		xui_invalidate ();
@@ -5185,7 +5185,7 @@ mpd_set_elapsed_timer (int msec_past_second)
 	delay_msec += 100;
 
 	// When playback stalls, avoid busy looping with the server
-	int elapsed_msec = g.song_elapsed * 1000 + msec_past_second;
+	int64_t elapsed_msec = (int64_t) g.song_elapsed * 1000 + msec_past_second;
 	if (elapsed_msec == g.elapsed_since)
 		delay_msec = MAX (delay_msec, 500);
 
