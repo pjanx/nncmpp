@@ -24,8 +24,7 @@
 	XX( NORMAL,      normal,       -1, -1, 0           ) \
 	XX( HIGHLIGHT,   highlight,    -1, -1, A_BOLD      ) \
 	/* Gauge                                          */ \
-	XX( ELAPSED,     elapsed,      -1, -1, A_REVERSE   ) \
-	XX( REMAINS,     remains,      -1, -1, A_UNDERLINE ) \
+	XX( ELAPSED,     elapsed,      -1, -1, A_UNDERLINE ) \
 	/* Tab bar                                        */ \
 	XX( TAB_BAR,     tab_bar,      -1, -1, A_REVERSE   ) \
 	XX( TAB_ACTIVE,  tab_active,   -1, -1, A_BOLD      ) \
@@ -1166,10 +1165,10 @@ struct app_ui
 {
 	struct widget *(*padding) (chtype attrs, float width, float height);
 	struct widget *(*label) (chtype attrs, const char *label);
-	struct widget *(*button) (chtype attrs, const char *label, enum action a);
-	struct widget *(*gauge) (chtype attrs);
+	struct widget *(*button) (chtype attrs, const char *label,
+		enum action action);
+	struct widget *(*gauge) (chtype attrs, double fraction);
 	struct widget *(*spectrum) (chtype attrs, int width);
-	struct widget *(*scrollbar) (chtype attrs);
 	struct widget *(*list) (void);
 	struct widget *(*editor) (chtype attrs);
 
@@ -1289,10 +1288,6 @@ static struct app_context
 	bool pulse_control_requested;       ///< PulseAudio control desired by user
 
 	struct line_editor editor;          ///< Line editor
-
-	// Terminal:
-
-	bool use_partial_boxes;             ///< Use Unicode box drawing chars
 
 	struct attrs attrs[ATTRIBUTE_COUNT];
 }
@@ -1764,6 +1759,24 @@ app_layout_text (const char *str, chtype attrs, struct layout *out)
 	app_flush_layout (&l, out);
 }
 
+static struct widget *
+app_make_gauge (chtype padding_attrs, double fraction)
+{
+	struct layout children = {};
+	struct widget *top =
+		app_push (&children, g.ui->padding (padding_attrs, 0, 0.125));
+	struct widget *gauge =
+		app_push (&children, g.ui->gauge (APP_ATTR (ELAPSED), fraction));
+	struct widget *bottom =
+		app_push (&children, g.ui->padding (padding_attrs, 0, 0.125));
+
+	gauge->height = g_xui.vunit - top->height - bottom->height;
+
+	struct widget *box = xui_vbox (children.head);
+	box->width = -1;
+	return box;
+}
+
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 struct app_song_info
@@ -1938,7 +1951,8 @@ app_layout_status (struct layout *out)
 		str_append_printf (&volume, "%3d%%", g.volume);
 
 	if (!stopped && g.song_elapsed >= 0 && g.song_duration >= 1)
-		app_push (&l, g.ui->gauge (attrs[0]))
+		app_push (&l, app_make_gauge (attrs[0],
+			(double) g.song_elapsed / g.song_duration))
 			->widget_id = WIDGET_GAUGE;
 	else
 		app_push_fill (&l, g.ui->padding (attrs[0], 0, 1));
@@ -2019,34 +2033,6 @@ app_layout_header (struct layout *out)
 		app_layout_text (header, APP_ATTR (HEADER), out);
 }
 
-/// Figure out scrollbar appearance.  @a s is the minimal slider length as well
-/// as the scrollbar resolution per @a visible item.
-struct scrollbar { long length, start; }
-app_compute_scrollbar (struct tab *tab, long visible, long s)
-{
-	long top = s * tab->item_top, total = s * tab->item_count;
-	if (total < visible)
-		return (struct scrollbar) { 0, 0 };
-	if (visible == 1)
-		return (struct scrollbar) { s, 0 };
-	if (visible == 2)
-		return (struct scrollbar) { s, top >= total / 2 ? s : 0 };
-
-	// Only be at the top or bottom when the top or bottom item can be seen.
-	// The algorithm isn't optimal but it's a bitch to get right.
-	double available_length = visible - 2 - s + 1;
-
-	double lenf = s + available_length * visible / total, length = 0.;
-	long offset = 1 + available_length * top / total + modf (lenf, &length);
-
-	if (top == 0)
-		return (struct scrollbar) { length, 0 };
-	if (top + visible >= total)
-		return (struct scrollbar) { length, visible - length };
-
-	return (struct scrollbar) { length, offset };
-}
-
 static struct layout
 app_layout_row (struct tab *tab, int item_index)
 {
@@ -2096,7 +2082,8 @@ app_layout_view (struct layout *out, int height)
 	struct tab *tab = g.active_tab;
 	if ((int) tab->item_count * g_xui.vunit > list->height)
 	{
-		struct widget *scrollbar = g.ui->scrollbar (APP_ATTR (SCROLLBAR));
+		struct widget *scrollbar = g_xui.ui->scrollbar
+			(APP_ATTR (SCROLLBAR), tab->item_top, tab->item_count);
 		list->width -= scrollbar->width;
 		app_push (&l, scrollbar)->widget_id = WIDGET_SCROLLBAR;
 	}
@@ -2415,10 +2402,102 @@ app_on_clipboard_copy (const char *text)
 	app_show_message (xstrdup ("Text copied to clipboard: "), xstrdup (text));
 }
 
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+// On a 20x20 raster to make it feasible to design on paper.
+#define STOP {INFINITY, INFINITY}
+static const struct xui_icon_point
+	app_icon_previous[] =
+	{
+		{10, 0}, {0, 10}, {10, 20}, STOP,
+		{20, 0}, {10, 10}, {20, 20}, STOP, STOP,
+	},
+	app_icon_pause[] =
+	{
+		{1, 0}, {7, 0}, {7, 20}, {1, 20}, STOP,
+		{13, 0}, {19, 0}, {19, 20}, {13, 20}, STOP, STOP,
+	},
+	app_icon_play[] =
+	{
+		{0, 0}, {20, 10}, {0, 20}, STOP, STOP,
+	},
+	app_icon_stop[] =
+	{
+		{0, 0}, {20, 0}, {20, 20}, {0, 20}, STOP, STOP,
+	},
+	app_icon_next[] =
+	{
+		{0, 0}, {10, 10}, {0, 20}, STOP,
+		{10, 0}, {20, 10}, {10, 20}, STOP, STOP,
+	},
+	app_icon_repeat[] =
+	{
+		{0, 12}, {0, 6}, {3, 3}, {13, 3}, {13, 0}, {20, 4.5},
+		{13, 9}, {13, 6}, {3, 6}, {3, 10}, STOP,
+		{0, 15.5}, {7, 11}, {7, 14}, {17, 14}, {17, 10}, {20, 8},
+		{20, 14}, {17, 17}, {7, 17}, {7, 20}, STOP, STOP,
+	},
+	app_icon_random[] =
+	{
+		{0, 6}, {0, 3}, {5, 3}, {6, 4.5}, {4, 7.5}, {3, 6}, STOP,
+		{9, 15.5}, {11, 12.5}, {12, 14}, {13, 14}, {13, 11}, {20, 15.5},
+		{13, 20}, {13, 17}, {10, 17}, STOP,
+		{0, 17}, {0, 14}, {3, 14}, {10, 3}, {13, 3}, {13, 0}, {20, 4.5},
+		{13, 9}, {13, 6}, {12, 6}, {5, 17}, STOP, STOP,
+	},
+	app_icon_single[] =
+	{
+		{7, 6}, {7, 4}, {9, 2}, {12, 2}, {12, 15}, {14, 15}, {14, 18},
+		{7, 18}, {7, 15}, {9, 15}, {9, 6}, STOP, STOP,
+	},
+	app_icon_consume[] =
+	{
+		{0, 13}, {0, 7}, {4, 3}, {10, 3}, {14, 7}, {5, 10}, {14, 13},
+		{10, 17}, {4, 17}, STOP,
+		{16, 12}, {16, 8}, {20, 8}, {20, 12}, STOP, STOP,
+	};
+#undef STOP
+
+static const struct xui_icon_point *
+app_icon_for_action (enum action action)
+{
+	switch (action)
+	{
+	case ACTION_MPD_PREVIOUS:
+		return app_icon_previous;
+	case ACTION_MPD_TOGGLE:
+		return g.state == PLAYER_PLAYING ? app_icon_pause : app_icon_play;
+	case ACTION_MPD_STOP:
+		return app_icon_stop;
+	case ACTION_MPD_NEXT:
+		return app_icon_next;
+	case ACTION_MPD_REPEAT:
+		return app_icon_repeat;
+	case ACTION_MPD_RANDOM:
+		return app_icon_random;
+	case ACTION_MPD_SINGLE:
+		return app_icon_single;
+	case ACTION_MPD_CONSUME:
+		return app_icon_consume;
+	default:
+		return NULL;
+	}
+}
+
 static struct widget *
 app_make_label (chtype attrs, const char *label)
 {
 	return g_xui.ui->label (attrs, 0, label);
+}
+
+static struct widget *
+app_make_button (chtype attrs, const char *label, enum action action)
+{
+	struct widget *w = g_xui.ui->symbol (attrs, label,
+		app_icon_for_action (action));
+	w->widget_id = WIDGET_BUTTON;
+	w->userdata = action;
+	return w;
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -5685,62 +5764,6 @@ app_on_reconnect (void *user_data)
 
 // --- TUI ---------------------------------------------------------------------
 
-static struct widget *
-tui_make_button (chtype attrs, const char *label, enum action a)
-{
-	struct widget *w = tui_make_label (attrs, 0, label);
-	w->widget_id = WIDGET_BUTTON;
-	w->userdata = a;
-	return w;
-}
-
-static void
-tui_render_gauge (struct widget *self)
-{
-	struct row_buffer buf = row_buffer_make ();
-	if (g.state == PLAYER_STOPPED || g.song_elapsed < 0 || g.song_duration < 1)
-		goto out;
-
-	float ratio = (float) g.song_elapsed / g.song_duration;
-	if (ratio < 0) ratio = 0;
-	if (ratio > 1) ratio = 1;
-
-	// Always compute it in exactly eight times the resolution,
-	// because sometimes Unicode is even useful
-	int len_left = ratio * self->width * 8 + 0.5;
-
-	static const char *partials[] = { " ", "▏", "▎", "▍", "▌", "▋", "▊", "▉" };
-	int remainder = len_left % 8;
-	len_left /= 8;
-
-	const char *partial = NULL;
-	if (g.use_partial_boxes)
-		partial = partials[remainder];
-	else
-		len_left += remainder >= (int) 4;
-
-	int len_right = self->width - len_left;
-	row_buffer_space (&buf, len_left, APP_ATTR (ELAPSED));
-	if (partial && len_right-- > 0)
-		row_buffer_append (&buf, partial, APP_ATTR (REMAINS));
-	row_buffer_space (&buf, len_right, APP_ATTR (REMAINS));
-
-out:
-	tui_flush_buffer (self, &buf);
-}
-
-// TODO: Perhaps it should save the number within.
-static struct widget *
-tui_make_gauge (chtype attrs)
-{
-	struct widget *w = xcalloc (1, sizeof *w + 1);
-	w->on_render = tui_render_gauge;
-	w->attrs = attrs;
-	w->width = -1;
-	w->height = 1;
-	return w;
-}
-
 static void
 tui_render_spectrum (struct widget *self)
 {
@@ -5760,7 +5783,8 @@ tui_render_spectrum (struct widget *self)
 static struct widget *
 tui_make_spectrum (chtype attrs, int width)
 {
-	struct widget *w = xcalloc (1, sizeof *w + 1);
+	struct widget *w = xcalloc (1, sizeof *w);
+	w->text = "";
 	w->on_render = tui_render_spectrum;
 	w->attrs = attrs;
 	w->width = width;
@@ -5768,72 +5792,11 @@ tui_make_spectrum (chtype attrs, int width)
 	return w;
 }
 
-static void
-tui_render_scrollbar (struct widget *self)
-{
-	// This assumes that we can write to the one-before-last column,
-	// i.e. that it's not covered by any double-wide character (and that
-	// ncurses comes to the right results when counting characters).
-	struct tab *tab = g.active_tab;
-	int visible_items = app_visible_items ();
-
-	hard_assert (tab->item_count != 0);
-	if (!g.use_partial_boxes)
-	{
-		struct scrollbar bar = app_compute_scrollbar (tab, visible_items, 1);
-		for (int row = 0; row < visible_items; row++)
-		{
-			move (self->y + row, self->x);
-			if (row < bar.start || row >= bar.start + bar.length)
-				addch (' ' | self->attrs);
-			else
-				addch (' ' | self->attrs | A_REVERSE);
-		}
-		return;
-	}
-
-	struct scrollbar bar = app_compute_scrollbar (tab, visible_items * 8, 8);
-	bar.length += bar.start;
-
-	int start_part = bar.start  % 8; bar.start  /= 8;
-	int end_part   = bar.length % 8; bar.length /= 8;
-
-	// Even with this, the solid part must be at least one character high
-	static const char *partials[] = { "█", "▇", "▆", "▅", "▄", "▃", "▂", "▁" };
-
-	for (int row = 0; row < visible_items; row++)
-	{
-		chtype attrs = self->attrs;
-		if (row > bar.start && row <= bar.length)
-			attrs ^= A_REVERSE;
-
-		const char *c = " ";
-		if (row == bar.start)  c = partials[start_part];
-		if (row == bar.length) c = partials[end_part];
-
-		move (self->y + row, self->x);
-
-		struct row_buffer buf = row_buffer_make ();
-		row_buffer_append (&buf, c, attrs);
-		row_buffer_flush (&buf);
-		row_buffer_free (&buf);
-	}
-}
-
-static struct widget *
-tui_make_scrollbar (chtype attrs)
-{
-	struct widget *w = xcalloc (1, sizeof *w + 1);
-	w->on_render = tui_render_scrollbar;
-	w->attrs = attrs;
-	w->width = 1;
-	return w;
-}
-
 static struct widget *
 tui_make_list (void)
 {
-	struct widget *w = xcalloc (1, sizeof *w + 1);
+	struct widget *w = xcalloc (1, sizeof *w);
+	w->text = "";
 	w->width = -1;
 	w->height = g.active_tab->item_count;
 	return w;
@@ -5882,7 +5845,8 @@ static struct widget *
 tui_make_editor (chtype attrs)
 {
 	// TODO: This should ideally measure the text, and copy it to w->text.
-	struct widget *w = xcalloc (1, sizeof *w + 1);
+	struct widget *w = xcalloc (1, sizeof *w);
+	w->text = "";
 	w->on_render = tui_render_editor;
 	w->attrs = attrs;
 	w->width = -1;
@@ -5894,211 +5858,16 @@ static struct app_ui app_tui_ui =
 {
 	.padding     = tui_make_padding,
 	.label       = app_make_label,
-	.button      = tui_make_button,
+	.button      = app_make_button,
 	.gauge       = tui_make_gauge,
 	.spectrum    = tui_make_spectrum,
-	.scrollbar   = tui_make_scrollbar,
 	.list        = tui_make_list,
 	.editor      = tui_make_editor,
 };
 
-// --- Shared GUI Icons --------------------------------------------------------
-
-#if defined WITH_X11 || defined WITH_APPKIT
-
-struct app_icon_point
-{
-	double x;
-	double y;
-};
-
-// On a 20x20 raster to make it feasible to design on paper.
-#define STOP {INFINITY, INFINITY}
-static const struct app_icon_point
-	app_icon_previous[] =
-	{
-		{10, 0}, {0, 10}, {10, 20}, STOP,
-		{20, 0}, {10, 10}, {20, 20}, STOP, STOP,
-	},
-	app_icon_pause[] =
-	{
-		{1, 0}, {7, 0}, {7, 20}, {1, 20}, STOP,
-		{13, 0}, {19, 0}, {19, 20}, {13, 20}, STOP, STOP,
-	},
-	app_icon_play[] =
-	{
-		{0, 0}, {20, 10}, {0, 20}, STOP, STOP,
-	},
-	app_icon_stop[] =
-	{
-		{0, 0}, {20, 0}, {20, 20}, {0, 20}, STOP, STOP,
-	},
-	app_icon_next[] =
-	{
-		{0, 0}, {10, 10}, {0, 20}, STOP,
-		{10, 0}, {20, 10}, {10, 20}, STOP, STOP,
-	},
-	app_icon_repeat[] =
-	{
-		{0, 12}, {0, 6}, {3, 3}, {13, 3}, {13, 0}, {20, 4.5},
-		{13, 9}, {13, 6}, {3, 6}, {3, 10}, STOP,
-		{0, 15.5}, {7, 11}, {7, 14}, {17, 14}, {17, 10}, {20, 8},
-		{20, 14}, {17, 17}, {7, 17}, {7, 20}, STOP, STOP,
-	},
-	app_icon_random[] =
-	{
-		{0, 6}, {0, 3}, {5, 3}, {6, 4.5}, {4, 7.5}, {3, 6}, STOP,
-		{9, 15.5}, {11, 12.5}, {12, 14}, {13, 14}, {13, 11}, {20, 15.5},
-		{13, 20}, {13, 17}, {10, 17}, STOP,
-		{0, 17}, {0, 14}, {3, 14}, {10, 3}, {13, 3}, {13, 0}, {20, 4.5},
-		{13, 9}, {13, 6}, {12, 6}, {5, 17}, STOP, STOP,
-	},
-	app_icon_single[] =
-	{
-		{7, 6}, {7, 4}, {9, 2}, {12, 2}, {12, 15}, {14, 15}, {14, 18},
-		{7, 18}, {7, 15}, {9, 15}, {9, 6}, STOP, STOP,
-	},
-	app_icon_consume[] =
-	{
-		{0, 13}, {0, 7}, {4, 3}, {10, 3}, {14, 7}, {5, 10}, {14, 13},
-		{10, 17}, {4, 17}, STOP,
-		{16, 12}, {16, 8}, {20, 8}, {20, 12}, STOP, STOP,
-	};
-#undef STOP
-
-static const struct app_icon_point *
-app_icon_for_action (enum action action)
-{
-	switch (action)
-	{
-	case ACTION_MPD_PREVIOUS:
-		return app_icon_previous;
-	case ACTION_MPD_TOGGLE:
-		return g.state == PLAYER_PLAYING ? app_icon_pause : app_icon_play;
-	case ACTION_MPD_STOP:
-		return app_icon_stop;
-	case ACTION_MPD_NEXT:
-		return app_icon_next;
-	case ACTION_MPD_REPEAT:
-		return app_icon_repeat;
-	case ACTION_MPD_RANDOM:
-		return app_icon_random;
-	case ACTION_MPD_SINGLE:
-		return app_icon_single;
-	case ACTION_MPD_CONSUME:
-		return app_icon_consume;
-	default:
-		return NULL;
-	}
-}
-
-#endif  // WITH_X11 || WITH_APPKIT
-
 // --- X11 ---------------------------------------------------------------------
 
 #ifdef WITH_X11
-
-static void
-x11_render_button (struct widget *self)
-{
-	x11_render_padding (self);
-
-	const struct app_icon_point *icon = app_icon_for_action (self->userdata);
-	if (!icon)
-	{
-		x11_render_label (self);
-		return;
-	}
-
-	size_t total = 0;
-	while (!isinf (icon[total].x)     || !isinf (icon[total].y)
-		|| !isinf (icon[total + 1].x) || !isinf (icon[total + 1].y))
-		total++;
-
-	// TODO: There should be an attribute for buttons, to handle this better.
-	XRenderColor color = *x11_fg (self);
-	if (!(self->attrs & A_BOLD))
-	{
-		color.alpha /= 2;
-		color.red /= 2;
-		color.green /= 2;
-		color.blue /= 2;
-	}
-
-	Picture source = XRenderCreateSolidFill (g_xui.dpy, &color);
-	const XRenderPictFormat *format
-		= XRenderFindStandardFormat (g_xui.dpy, PictStandardA8);
-
-	int x = self->x, y = self->y + (self->height - self->width) / 2;
-	XPointDouble buffer[total], *p = buffer;
-	for (size_t i = 0; i <= total; i++)
-		if (icon[i].x != INFINITY)
-		{
-			p->x = x + icon[i].x / 20.0 * self->width;
-			p->y = y + icon[i].y / 20.0 * self->width;
-			p++;
-		}
-		else if (p != buffer)
-		{
-			XRenderCompositeDoublePoly (g_xui.dpy, PictOpOver,
-				source, g_xui.x11_pixmap_picture, format,
-				0, 0, 0, 0, buffer, p - buffer, EvenOddRule);
-			p = buffer;
-		}
-	XRenderFreePicture (g_xui.dpy, source);
-}
-
-static struct widget *
-x11_make_button (chtype attrs, const char *label, enum action a)
-{
-	struct widget *w = x11_make_label (attrs, 0, label);
-	w->widget_id = WIDGET_BUTTON;
-	w->userdata = a;
-
-	if (app_icon_for_action (a))
-	{
-		w->on_render = x11_render_button;
-
-		// It should be padded by the caller horizontally.
-		w->height = g_xui.vunit;
-		w->width = w->height * 3 / 4;
-	}
-	return w;
-}
-
-static void
-x11_render_gauge (struct widget *self)
-{
-	x11_render_padding (self);
-	if (g.state == PLAYER_STOPPED || g.song_elapsed < 0 || g.song_duration < 1)
-		return;
-
-	int part = (float) g.song_elapsed / g.song_duration * self->width;
-	XRenderFillRectangle (g_xui.dpy, PictOpSrc, g_xui.x11_pixmap_picture,
-		x11_bg_attrs (APP_ATTR (ELAPSED)),
-		self->x,
-		self->y + self->height / 8,
-		part,
-		self->height * 3 / 4);
-	XRenderFillRectangle (g_xui.dpy, PictOpSrc, g_xui.x11_pixmap_picture,
-		x11_bg_attrs (APP_ATTR (REMAINS)),
-		self->x + part,
-		self->y + self->height / 8,
-		self->width - part,
-		self->height * 3 / 4);
-}
-
-// TODO: Perhaps it should save the number within.
-static struct widget *
-x11_make_gauge (chtype attrs)
-{
-	struct widget *w = xcalloc (1, sizeof *w + 1);
-	w->on_render = x11_render_gauge;
-	w->attrs = attrs;
-	w->width = -1;
-	w->height = g_xui.vunit;
-	return w;
-}
 
 static void
 x11_render_spectrum (struct widget *self)
@@ -6132,7 +5901,8 @@ x11_render_spectrum (struct widget *self)
 static struct widget *
 x11_make_spectrum (chtype attrs, int width)
 {
-	struct widget *w = xcalloc (1, sizeof *w + 1);
+	struct widget *w = xcalloc (1, sizeof *w);
+	w->text = "";
 	w->on_render = x11_render_spectrum;
 	w->attrs = attrs;
 	w->width = width * g_xui.vunit / 2;
@@ -6140,37 +5910,11 @@ x11_make_spectrum (chtype attrs, int width)
 	return w;
 }
 
-static void
-x11_render_scrollbar (struct widget *self)
-{
-	x11_render_padding (self);
-
-	struct tab *tab = g.active_tab;
-	struct scrollbar bar =
-		app_compute_scrollbar (tab, app_visible_items_height (), g_xui.vunit);
-
-	XRenderFillRectangle (g_xui.dpy, PictOpSrc, g_xui.x11_pixmap_picture,
-		x11_fg_attrs (self->attrs),
-		self->x,
-		self->y + bar.start,
-		self->width,
-		bar.length);
-}
-
-static struct widget *
-x11_make_scrollbar (chtype attrs)
-{
-	struct widget *w = xcalloc (1, sizeof *w + 1);
-	w->on_render = x11_render_scrollbar;
-	w->attrs = attrs;
-	w->width = g_xui.vunit / 2;
-	return w;
-}
-
 static struct widget *
 x11_make_list (void)
 {
-	struct widget *w = xcalloc (1, sizeof *w + 1);
+	struct widget *w = xcalloc (1, sizeof *w);
+	w->text = "";
 	w->on_render = x11_render_padding;
 	return w;
 }
@@ -6216,7 +5960,8 @@ static struct widget *
 x11_make_editor (chtype attrs)
 {
 	// TODO: This should ideally measure the text, and copy it to w->text.
-	struct widget *w = xcalloc (1, sizeof *w + 1);
+	struct widget *w = xcalloc (1, sizeof *w);
+	w->text = "";
 	w->on_render = x11_render_editor;
 	w->attrs = attrs;
 	w->width = -1;
@@ -6228,10 +5973,9 @@ static struct app_ui app_x11_ui =
 {
 	.padding     = x11_make_padding,
 	.label       = app_make_label,
-	.button      = x11_make_button,
+	.button      = app_make_button,
 	.gauge       = x11_make_gauge,
 	.spectrum    = x11_make_spectrum,
-	.scrollbar   = x11_make_scrollbar,
 	.list        = x11_make_list,
 	.editor      = x11_make_editor,
 
@@ -6243,97 +5987,6 @@ static struct app_ui app_x11_ui =
 // --- AppKit ------------------------------------------------------------------
 
 #ifdef WITH_APPKIT
-
-static void
-appkit_render_button (struct widget *self)
-{
-	appkit_render_padding (self);
-
-	const struct app_icon_point *icon = app_icon_for_action (self->userdata);
-	if (!icon)
-	{
-		appkit_render_label (self);
-		return;
-	}
-
-	// TODO: There should be an attribute for buttons, to handle this better.
-	NSColor *color = appkit_fg (self);
-	if (!(self->attrs & A_BOLD))
-		color = [color colorWithAlphaComponent:[color alphaComponent] * 0.5];
-
-	[color setFill];
-	NSBezierPath *path = [NSBezierPath bezierPath];
-	[path setWindingRule:NSWindingRuleEvenOdd];
-
-	int x = self->x, y = self->y + (self->height - self->width) / 2;
-	bool started = false;
-	for (const struct app_icon_point *p = icon;
-		!isinf (p[0].x) || !isinf (p[0].y)
-	 || !isinf (p[1].x) || !isinf (p[1].y); p++)
-	{
-		if (isinf (p->x))
-		{
-			[path closePath];
-			started = false;
-			continue;
-		}
-
-		NSPoint point = NSMakePoint
-			(x + p->x / 20.0 * self->width, y + p->y / 20.0 * self->width);
-		if (!started)
-			[path moveToPoint:point];
-		else
-			[path lineToPoint:point];
-		started = true;
-	}
-	[path fill];
-}
-
-static struct widget *
-appkit_make_button (chtype attrs, const char *label, enum action a)
-{
-	struct widget *w = appkit_make_label (attrs, 0, label);
-	w->widget_id = WIDGET_BUTTON;
-	w->userdata = a;
-
-	if (app_icon_for_action (a))
-	{
-		w->on_render = appkit_render_button;
-
-		// It should be padded by the caller horizontally.
-		w->height = g_xui.vunit;
-		w->width = w->height * 3 / 4;
-	}
-	return w;
-}
-
-static void
-appkit_render_gauge (struct widget *self)
-{
-	appkit_render_padding (self);
-	if (g.state == PLAYER_STOPPED || g.song_elapsed < 0 || g.song_duration < 1)
-		return;
-
-	int part = (float) g.song_elapsed / g.song_duration * self->width;
-	[appkit_bg_attrs (APP_ATTR (ELAPSED)) setFill];
-	NSRectFill (NSMakeRect
-		(self->x, self->y + self->height / 8, part, self->height * 3 / 4));
-	[appkit_bg_attrs (APP_ATTR (REMAINS)) setFill];
-	NSRectFill (NSMakeRect (self->x + part, self->y + self->height / 8,
-		self->width - part, self->height * 3 / 4));
-}
-
-// TODO: Perhaps it should save the number within.
-static struct widget *
-appkit_make_gauge (chtype attrs)
-{
-	struct widget *w = xcalloc (1, sizeof *w + 1);
-	w->on_render = appkit_render_gauge;
-	w->attrs = attrs;
-	w->width = -1;
-	w->height = g_xui.vunit;
-	return w;
-}
 
 static void
 appkit_render_spectrum (struct widget *self)
@@ -6360,7 +6013,8 @@ appkit_render_spectrum (struct widget *self)
 static struct widget *
 appkit_make_spectrum (chtype attrs, int width)
 {
-	struct widget *w = xcalloc (1, sizeof *w + 1);
+	struct widget *w = xcalloc (1, sizeof *w);
+	w->text = "";
 	w->on_render = appkit_render_spectrum;
 	w->attrs = attrs;
 	w->width = width * g_xui.vunit / 2;
@@ -6368,34 +6022,11 @@ appkit_make_spectrum (chtype attrs, int width)
 	return w;
 }
 
-static void
-appkit_render_scrollbar (struct widget *self)
-{
-	appkit_render_padding (self);
-
-	struct tab *tab = g.active_tab;
-	struct scrollbar bar =
-		app_compute_scrollbar (tab, app_visible_items_height (), g_xui.vunit);
-
-	[appkit_fg_attrs (self->attrs) setFill];
-	NSRectFill (NSMakeRect
-		(self->x, self->y + bar.start, self->width, bar.length));
-}
-
-static struct widget *
-appkit_make_scrollbar (chtype attrs)
-{
-	struct widget *w = xcalloc (1, sizeof *w + 1);
-	w->on_render = appkit_render_scrollbar;
-	w->attrs = attrs;
-	w->width = g_xui.vunit / 2;
-	return w;
-}
-
 static struct widget *
 appkit_make_list (void)
 {
-	struct widget *w = xcalloc (1, sizeof *w + 1);
+	struct widget *w = xcalloc (1, sizeof *w);
+	w->text = "";
 	w->on_render = appkit_render_padding;
 	return w;
 }
@@ -6446,7 +6077,8 @@ static struct widget *
 appkit_make_editor (chtype attrs)
 {
 	// TODO: This should ideally measure the text, and copy it to w->text.
-	struct widget *w = xcalloc (1, sizeof *w + 1);
+	struct widget *w = xcalloc (1, sizeof *w);
+	w->text = "";
 	w->on_render = appkit_render_editor;
 	w->attrs = attrs;
 	w->width = -1;
@@ -6458,10 +6090,9 @@ static struct app_ui app_appkit_ui =
 {
 	.padding     = appkit_make_padding,
 	.label       = app_make_label,
-	.button      = appkit_make_button,
+	.button      = app_make_button,
 	.gauge       = appkit_make_gauge,
 	.spectrum    = appkit_make_spectrum,
-	.scrollbar   = appkit_make_scrollbar,
 	.list        = appkit_make_list,
 	.editor      = appkit_make_editor,
 
@@ -6699,7 +6330,7 @@ appkit_init_now_playing (void)
 #endif  // WITH_APPKIT
 
 static void
-app_init_ui (bool requested_x11)
+app_init_ui (bool requested_gui)
 {
 	xui_preinit ();
 
@@ -6708,15 +6339,13 @@ app_init_ui (bool requested_x11)
 	g_editor_keys = app_init_bindings ("editor",
 		g_editor_defaults, N_ELEMENTS (g_editor_defaults), &g_editor_keys_len);
 
-	// It doesn't work 100% (e.g. incompatible with underlining in urxvt)
-	// TODO: make this configurable
-	g.use_partial_boxes = g_xui.locale_is_utf8;
+	// TODO(p): Make g_xui.use_partial_boxes configurable.
 
 #ifdef WITH_X11
 	g_xui.x11_fontname = get_config_string (g.config.root, "settings.x11_font");
 #endif  // WITH_X11
 
-	xui_start (&g.poller, requested_x11, g.attrs, N_ELEMENTS (g.attrs));
+	xui_start (&g.poller, requested_gui, g.attrs, N_ELEMENTS (g.attrs));
 
 #ifdef WITH_X11
 	if (g_xui.ui == &x11_ui)
