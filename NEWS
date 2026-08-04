@@ -6,6 +6,10 @@ Unreleased
  * AppKit: the application now shows up in Now Playing,
    and as a consequence responds to media keys
 
+ * AppKit: made the application icon look nicer
+
+ * X11: improved font lookup of italic and bold variants
+
 
 2.2.0 (2026-05-26)
 
