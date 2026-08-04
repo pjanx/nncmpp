@@ -5775,7 +5775,7 @@ tui_render_spectrum (struct widget *self)
 #ifdef WITH_FFTW
 	row_buffer_append (&buf, g.spectrum.rendered, self->attrs);
 #endif   // WITH_FFTW
-	tui_flush_buffer (self, &buf);
+	tui_flush_buffer (self, 0, &buf);
 
 	move (last_y, last_x);
 }
@@ -5833,7 +5833,7 @@ tui_render_editor (struct widget *self)
 	//   considerably complicate this algorithm
 	for (; start < e->len; start++)
 		row_buffer_append_c (&buf, e->line[start], self->attrs);
-	tui_flush_buffer (self, &buf);
+	tui_flush_buffer (self, 0, &buf);
 
 	// FIXME: This should be at the end of of tui_render().
 	int caret = !!e->prompt + preceding;
