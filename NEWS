@@ -3,6 +3,8 @@ Unreleased
  * The "elapsed" attribute is now used for "remaining" as well.
    For the typical theme, remove "remaining" and reverse your "elapsed".
 
+ * Added "b", "f", "p", "s" bindings for back/forward seek, play/pause, stop
+
  * AppKit: the application now shows up in Now Playing,
    and as a consequence responds to media keys
 

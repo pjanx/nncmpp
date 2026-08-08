@@ -3229,10 +3229,14 @@ g_normal_defaults[] =
 	{ ">",          ACTION_MPD_NEXT           },
 	{ "Left",       ACTION_MPD_PREVIOUS       },
 	{ "Right",      ACTION_MPD_NEXT           },
+	{ "b",          ACTION_MPD_BACKWARD       },  // ncmpcpp
+	{ "f",          ACTION_MPD_FORWARD        },  // ncmpcpp
 	{ "M-Left",     ACTION_MPD_BACKWARD       },
 	{ "M-Right",    ACTION_MPD_FORWARD        },
 	{ "h",          ACTION_MPD_PREVIOUS       },
 	{ "l",          ACTION_MPD_NEXT           },
+	{ "p",          ACTION_MPD_TOGGLE         },  // ncmpcpp
+	{ "s",          ACTION_MPD_STOP           },  // ncmpcpp
 	{ "Space",      ACTION_MPD_TOGGLE         },
 	{ "C-Space",    ACTION_MPD_STOP           },
 	{ "u",          ACTION_MPD_UPDATE_DB      },
@@ -3251,6 +3255,8 @@ g_editor_defaults[] =
 	{ "C-f",        ACTION_EDITOR_F_CHAR      },
 	{ "M-b",        ACTION_EDITOR_B_WORD      },
 	{ "M-f",        ACTION_EDITOR_F_WORD      },
+	{ "M-Left",     ACTION_EDITOR_B_WORD      },
+	{ "M-Right",    ACTION_EDITOR_F_WORD      },
 	{ "Home",       ACTION_EDITOR_HOME        },
 	{ "End",        ACTION_EDITOR_END         },
 	{ "C-a",        ACTION_EDITOR_HOME        },
