@@ -5922,16 +5922,11 @@ x11_make_list (void)
 static void
 x11_render_editor (struct widget *self)
 {
-	x11_render_padding (self);
-
 	struct x11_font *font = x11_widget_font (self);
 	XftColor color = { .color = *x11_fg (self) };
 
-	// A simplistic adaptation of tui_render_editor() follows.
 	const struct line_editor *e = &g.editor;
-	int x = self->x;
 
-	// TODO: Make this scroll around the caret, and fade like labels.
 	size_t len;
 	ucs4_t *buf = xcalloc (e->len + 1, sizeof *buf);
 	u32_cpy (buf, e->line, e->point);
@@ -5940,14 +5935,32 @@ x11_render_editor (struct widget *self)
 	char *b = (char *) u32_to_u8 (buf, u32_strlen (buf) + 1, NULL, &len);
 	free (buf);
 
-	x += x11_font_draw (font, &color, x, self->y, a);
-	int caret = x;
-	x += x11_font_draw (font, &color, x, self->y, b);
+	int widthA = x11_font_hadvance (font, a);
+	int widthB = x11_font_hadvance (font, b);
+
+	// Automatically scroll around the caret by changing where we start drawing:
+	enum { CARET_WIDTH = 2 };
+	int x = self->x, width_limit = self->width - CARET_WIDTH;
+	if (widthA + widthB > width_limit)
+	{
+		// Push it to the left until the caret is in the middle...
+		int offset = MAX (0, widthA - width_limit / 2);
+		// ...but then push it to the right until text fills the whole width.
+		offset = MIN (offset, widthA + widthB - width_limit);
+
+		x -= offset;
+	}
+
+	x11_render_padding (self);
+
+	int caret = x + x11_font_draw (font, &color, x, self->y, a);
+	x11_font_draw (font, &color, caret, self->y, b);
 	free (a);
 	free (b);
 
-	XRenderFillRectangle (g_xui.dpy, PictOpSrc, g_xui.x11_pixmap_picture,
-		&color.color, caret, self->y, 2, self->height);
+	XRenderColor white = { 0xffff, 0xffff, 0xffff, 0xffff };
+	XRenderFillRectangle (g_xui.dpy, PictOpDifference, g_xui.x11_pixmap_picture,
+		&white, caret, self->y, CARET_WIDTH, self->height);
 }
 
 static struct widget *
@@ -5960,7 +5973,11 @@ x11_make_editor (chtype attrs)
 	w->attrs = attrs;
 	w->width = -1;
 	w->height = g_xui.vunit;
-	return w;
+
+	// Enforce clipping by putting this inside a container.
+	struct widget *wrapper = xui_hbox (w);
+	wrapper->width = -1;
+	return wrapper;
 }
 
 static struct app_ui app_x11_ui =
