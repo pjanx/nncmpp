@@ -3172,6 +3172,7 @@ static struct binding_default
 g_normal_defaults[] =
 {
 	{ "q",          ACTION_QUIT               },
+	{ "C-q",        ACTION_QUIT               },
 	{ "C-l",        ACTION_REDRAW             },
 	{ "Escape",     ACTION_ABORT              },
 	{ "M-Tab",      ACTION_TAB_LAST           },
