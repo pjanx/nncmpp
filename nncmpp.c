@@ -2229,6 +2229,13 @@ app_layout_statusbar (struct layout *out)
 	else if (g.editor.line)
 	{
 		app_push (&l, g.ui->padding (attrs[0], 0.25, 1));
+		if (g.editor.prompt)
+		{
+			hard_assert (g.editor.prompt < 127);
+			app_push (&l,
+				g.ui->label (attrs[1], (char[2]) { g.editor.prompt, 0 }));
+			app_push (&l, g.ui->padding (attrs[0], 0.25, 1));
+		}
 		app_push (&l, g.ui->editor (attrs[1]));
 		app_push (&l, g.ui->padding (attrs[0], 0.25, 1));
 		app_flush_layout (&l, out);
@@ -5808,12 +5815,6 @@ tui_render_editor (struct widget *self)
 	struct row_buffer buf = row_buffer_make ();
 	const struct line_editor *e = &g.editor;
 	int width = self->width;
-	if (e->prompt)
-	{
-		hard_assert (e->prompt < 127);
-		row_buffer_append_c (&buf, e->prompt, self->attrs);
-		width--;
-	}
 
 	int following = 0;
 	for (size_t i = e->point; i < e->len; i++)
@@ -5836,8 +5837,7 @@ tui_render_editor (struct widget *self)
 	tui_flush_buffer (self, 0, &buf);
 
 	// FIXME: This should be at the end of of tui_render().
-	int caret = !!e->prompt + preceding;
-	move (self->y, self->x + caret);
+	move (self->y, self->x + preceding);
 	curs_set (1);
 }
 
@@ -5930,12 +5930,6 @@ x11_render_editor (struct widget *self)
 	// A simplistic adaptation of tui_render_editor() follows.
 	const struct line_editor *e = &g.editor;
 	int x = self->x;
-	if (e->prompt)
-	{
-		hard_assert (e->prompt < 127);
-		x += x11_font_draw (font, &color, x, self->y,
-			(char[2]) { e->prompt, 0 }) + g_xui.vunit / 4;
-	}
 
 	// TODO: Make this scroll around the caret, and fade like labels.
 	size_t len;
