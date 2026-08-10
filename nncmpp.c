@@ -2945,6 +2945,30 @@ app_process_action (enum action action)
 	}
 }
 
+static enum line_editor_action
+app_map_editor_action (enum action action)
+{
+	switch (action)
+	{
+	case ACTION_EDITOR_B_CHAR:          return LINE_EDITOR_B_CHAR;
+	case ACTION_EDITOR_F_CHAR:          return LINE_EDITOR_F_CHAR;
+	case ACTION_EDITOR_B_WORD:          return LINE_EDITOR_B_WORD;
+	case ACTION_EDITOR_F_WORD:          return LINE_EDITOR_F_WORD;
+	case ACTION_EDITOR_HOME:            return LINE_EDITOR_HOME;
+	case ACTION_EDITOR_END:             return LINE_EDITOR_END;
+	case ACTION_EDITOR_TRANSPOSE_CHARS: return LINE_EDITOR_TRANSPOSE_CHARS;
+	case ACTION_EDITOR_UPCASE_WORD:     return LINE_EDITOR_UPCASE_WORD;
+	case ACTION_EDITOR_DOWNCASE_WORD:   return LINE_EDITOR_DOWNCASE_WORD;
+	case ACTION_EDITOR_CAPITALIZE_WORD: return LINE_EDITOR_CAPITALIZE_WORD;
+	case ACTION_EDITOR_B_DELETE:        return LINE_EDITOR_B_DELETE;
+	case ACTION_EDITOR_F_DELETE:        return LINE_EDITOR_F_DELETE;
+	case ACTION_EDITOR_B_KILL_WORD:     return LINE_EDITOR_B_KILL_WORD;
+	case ACTION_EDITOR_B_KILL_LINE:     return LINE_EDITOR_B_KILL_LINE;
+	case ACTION_EDITOR_F_KILL_LINE:     return LINE_EDITOR_F_KILL_LINE;
+	default:                            return -1;
+	}
+}
+
 static bool
 app_editor_process_action (enum action action)
 {
@@ -2960,39 +2984,13 @@ app_editor_process_action (enum action action)
 		g.editor.on_end = NULL;
 		return true;
 	default:
+	{
+		enum line_editor_action a = app_map_editor_action (action);
+		if (a != (enum line_editor_action) -1)
+			return line_editor_action (&g.editor, a);
 		print_error ("\"%s\" is not allowed here", action_description (action));
 		return false;
-
-	case ACTION_EDITOR_B_CHAR:
-		return line_editor_action (&g.editor, LINE_EDITOR_B_CHAR);
-	case ACTION_EDITOR_F_CHAR:
-		return line_editor_action (&g.editor, LINE_EDITOR_F_CHAR);
-	case ACTION_EDITOR_B_WORD:
-		return line_editor_action (&g.editor, LINE_EDITOR_B_WORD);
-	case ACTION_EDITOR_F_WORD:
-		return line_editor_action (&g.editor, LINE_EDITOR_F_WORD);
-	case ACTION_EDITOR_HOME:
-		return line_editor_action (&g.editor, LINE_EDITOR_HOME);
-	case ACTION_EDITOR_END:
-		return line_editor_action (&g.editor, LINE_EDITOR_END);
-
-	case ACTION_EDITOR_UPCASE_WORD:
-		return line_editor_action (&g.editor, LINE_EDITOR_UPCASE_WORD);
-	case ACTION_EDITOR_DOWNCASE_WORD:
-		return line_editor_action (&g.editor, LINE_EDITOR_DOWNCASE_WORD);
-	case ACTION_EDITOR_CAPITALIZE_WORD:
-		return line_editor_action (&g.editor, LINE_EDITOR_CAPITALIZE_WORD);
-
-	case ACTION_EDITOR_B_DELETE:
-		return line_editor_action (&g.editor, LINE_EDITOR_B_DELETE);
-	case ACTION_EDITOR_F_DELETE:
-		return line_editor_action (&g.editor, LINE_EDITOR_F_DELETE);
-	case ACTION_EDITOR_B_KILL_WORD:
-		return line_editor_action (&g.editor, LINE_EDITOR_B_KILL_WORD);
-	case ACTION_EDITOR_B_KILL_LINE:
-		return line_editor_action (&g.editor, LINE_EDITOR_B_KILL_LINE);
-	case ACTION_EDITOR_F_KILL_LINE:
-		return line_editor_action (&g.editor, LINE_EDITOR_F_KILL_LINE);
+	}
 	}
 }
 
@@ -3260,6 +3258,7 @@ g_editor_defaults[] =
 	{ "C-a",        ACTION_EDITOR_HOME        },
 	{ "C-e",        ACTION_EDITOR_END         },
 
+	{ "C-t",        ACTION_EDITOR_TRANSPOSE_CHARS },
 	{ "M-u",        ACTION_EDITOR_UPCASE_WORD     },
 	{ "M-l",        ACTION_EDITOR_DOWNCASE_WORD   },
 	{ "M-c",        ACTION_EDITOR_CAPITALIZE_WORD },

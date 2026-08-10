@@ -1,3 +1,8 @@
+Unreleased
+
+ * Added a Readline-like C-t editor binding
+
+
 2.3.0 (2026-08-08)
 
  * The "elapsed" attribute is now used for "remaining" as well.
