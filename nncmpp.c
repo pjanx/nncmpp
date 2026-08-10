@@ -2321,8 +2321,6 @@ app_layout (void)
 	g_xui.widgets = widgets.head;
 
 	app_fix_view_range();
-
-	curs_set (0);
 }
 
 // --- Actions -----------------------------------------------------------------
@@ -5842,10 +5840,7 @@ tui_render_editor (struct widget *self)
 	for (; start < e->len; start++)
 		row_buffer_append_c (&buf, e->line[start], self->attrs);
 	tui_flush_buffer (self, 0, &buf);
-
-	// FIXME: This should be at the end of of tui_render().
-	move (self->y, self->x + preceding);
-	curs_set (1);
+	tui_set_cursor (self->x + preceding, self->y);
 }
 
 static struct widget *
@@ -5968,6 +5963,8 @@ x11_render_editor (struct widget *self)
 	XRenderColor white = { 0xffff, 0xffff, 0xffff, 0xffff };
 	XRenderFillRectangle (g_xui.dpy, PictOpDifference, g_xui.x11_pixmap_picture,
 		&white, caret, self->y, CARET_WIDTH, self->height);
+	x11_set_cursor (caret,
+		self->y + x11_widget_font (self)->list->font->ascent);
 }
 
 static struct widget *
