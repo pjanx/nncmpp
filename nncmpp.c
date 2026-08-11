@@ -2407,6 +2407,16 @@ app_on_clipboard_copy (const char *text)
 	app_show_message (xstrdup ("Text copied to clipboard: "), xstrdup (text));
 }
 
+static void
+app_on_clipboard_paste (const char *text)
+{
+	struct utf8_iter iter = utf8_iter_make (text);
+	int32_t codepoint = 0;
+	while ((codepoint = utf8_iter_next (&iter, NULL)) >= 0)
+		line_editor_insert (&g.editor, codepoint);
+	xui_invalidate ();
+}
+
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 // On a 20x20 raster to make it feasible to design on paper.
