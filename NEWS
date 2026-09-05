@@ -1,3 +1,8 @@
+2.3.2 (2026-09-05)
+
+ * X11: fixed doubled Fontconfig substitutions
+
+
 2.3.1 (2026-09-04)
 
  * Added a Readline-like C-t editor binding
