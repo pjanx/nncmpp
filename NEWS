@@ -2,6 +2,8 @@ Unreleased
 
  * AppKit: prevent a resource leak during rendering
 
+ * AppKit: use monospaced digits
+
 
 2.3.2 (2026-09-05)
 
