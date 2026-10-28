@@ -1,3 +1,8 @@
+Unreleased
+
+ * AppKit: prevent a resource leak during rendering
+
+
 2.3.2 (2026-09-05)
 
  * X11: fixed doubled Fontconfig substitutions
