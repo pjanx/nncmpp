@@ -5043,7 +5043,7 @@ spectrum_redraw (void)
 	// A full refresh would be too computationally expensive,
 	// let's hack around it in this case
 	struct widget *spectrum = app_widget_by_id (WIDGET_SPECTRUM);
-	if (!spectrum)
+	if (!spectrum || g_xui.hidden)
 		return;
 
 #ifdef WITH_APPKIT

@@ -4,6 +4,9 @@ Unreleased
 
  * AppKit: moved to monospaced digits
 
+ * AppKit: reduced CPU usage when not visible,
+   specifically with the spectrum visualiser on
+
  * X11: stopped beeping on pressing Super+modifiers
 
 
