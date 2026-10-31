@@ -2,10 +2,14 @@ Unreleased
 
  * AppKit: prevented a resource leak during rendering
 
- * AppKit: moved to monospaced digits
+ * AppKit: moved to monospaced digits, so that the gauge doesn't jump around
 
  * AppKit: reduced CPU usage when not visible,
    specifically with the spectrum visualiser on
+
+ * AppKit: fixed activation from a hidden state not ordering the window front
+
+ * AppKit: expanded menu bar contents
 
  * X11: stopped beeping on pressing Super+modifiers
 
